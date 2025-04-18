@@ -4,11 +4,11 @@ from taichi_volume_renderer import Scene
 
 ti.init(arch=ti.gpu)
 
-# 体积
+# Volume
 x, y, z = np.mgrid[-0.5:0.5:100j, -0.5:0.5:100j, -0.5:0.5:100j]
 smoke_numpy = np.zeros_like(x)
-# volume_numpy[x ** 2 + y ** 2 + z ** 2 < 0.5 ** 2] = 5  # 单个球体
-for x_0 in [-0.25, 0.25]:  # 8个球体
+# volume_numpy[x ** 2 + y ** 2 + z ** 2 < 0.5 ** 2] = 5  # Single sphere
+for x_0 in [-0.25, 0.25]:  # 8 spheres
     for y_0 in [-0.25, 0.25]:
         for z_0 in [-0.25, 0.25]:
             if x_0 > 0 and y_0 < 0 and z_0 > 0:
@@ -18,7 +18,7 @@ smoke_numpy += np.maximum(0, 1 - ((x - 0.25) ** 2 + (y - -0.25) ** 2 + (z - 0.25
 smoke_color_numpy = np.ones(list(x.shape) + [3])
 smoke_color_numpy[np.logical_and(x > 0, np.logical_and(y > 0, z > 0))] = 0
 
-# 光源
+# Light
 point_lights_pos_numpy = np.array([
     [0, 4, 7],
     [0, 0, 8]], dtype=float)
@@ -33,19 +33,19 @@ scene = Scene(
     point_lights_intensity_numpy=point_lights_intensity_numpy)
 
 
-# 窗口内容
+# Window
 res = 720, 720
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=res)
 
-# 交互
+# Interaction
 mouse_pressed = False
 cursor_start_pos = (-1, -1)
 
-scene.update_light()  # 计算光照和阴影
+scene.update_light()  # Calculate light and shadow
 
 gui = ti.GUI("Render", res=res)
 while not gui.get_event(ti.GUI.ESCAPE, ti.GUI.EXIT):
-    # scene.update_light()  # 如果需要更新光照，取消注释此行
+    # scene.update_light()  # If need recalculate light and shadow, uncomment this line.
     scene.render(pixels)
     gui.set_image(pixels)
     gui.show()
