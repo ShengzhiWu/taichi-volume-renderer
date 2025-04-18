@@ -62,4 +62,3 @@ while not gui.get_event(ti.GUI.ESCAPE, ti.GUI.EXIT):
             cursor_start_pos = cursor_pos
     else:
         mouse_pressed = False
-        
