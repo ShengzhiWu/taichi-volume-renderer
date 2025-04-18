@@ -7,4 +7,4 @@ pip install taichi-volume-renderer
 
 Example see `tests/test_0.py`.
 
-![0](D:\GitHub\taichi-volume-renderer\images\0.png)
+![0](/images/0.png)
