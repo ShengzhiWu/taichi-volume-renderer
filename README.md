@@ -15,6 +15,6 @@ taichi_volume_renderer.plot_volume(a)
 
 ## Usage
 
-Example see `examples/example.py`.
+The simplest example would be rendering a static scene, with smoke density, color, and lighting all specified by a few NumPy arrays. See `examples/example.py`.
 
 ![0](/images/0.png)
