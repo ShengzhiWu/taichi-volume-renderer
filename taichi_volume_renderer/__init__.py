@@ -2,7 +2,7 @@ import math
 import numpy as np
 import taichi as ti
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 class Scene():
     def __init__(
@@ -12,10 +12,13 @@ class Scene():
         point_lights_pos_taichi,
         point_lights_intensity_taichi,
         ray_tracing_stop_threshold=0.01,  # 0 ~ 1
-        background=[0.2, 0.2, 0.2]
+        background=[0.2, 0.2, 0.2],
+        smoke_density_factor=1.
     ):
         # Volume data
         self.smoke_density = smoke_density_taichi  # Smoke density
+        self._smoke_density_factor = ti.field(dtype=ti.f32, shape=())
+        self._smoke_density_factor[None] = smoke_density_factor
         self.smoke_color = smoke_color_taichi  # Smoke color
 
         # Light
@@ -66,7 +69,7 @@ class Scene():
                         y_int = int(pos_maped.y)
                         z_int = int(pos_maped.z)
                         if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
-                            transmittance *= 1 - self.smoke_density[x_int, y_int, z_int] * self._step_length_light[None]
+                            transmittance *= 1 - self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length_light[None]
                         pos_2 += d * self._step_length_light[None]
                     self.light_density[i, j, k] += self.point_lights_intensity[l] * (transmittance / distance_squared)
         self.update_light = update_light
@@ -114,11 +117,19 @@ class Scene():
                     y_int = int(pos_maped.y)
                     z_int = int(pos_maped.z)
                     if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
-                        transmittance *= 1 - self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
-                        pixels[i, j] += self.smoke_density[x_int, y_int, z_int] * self.smoke_color[x_int, y_int, z_int] * self._step_length[None] * self.light_density[x_int, y_int, z_int] * transmittance
+                        transmittance *= 1 - self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
+                        pixels[i, j] += self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self.smoke_color[x_int, y_int, z_int] * self._step_length[None] * self.light_density[x_int, y_int, z_int] * transmittance
                     pos += d * self._step_length[None]
                 pixels[i, j] += self._background[None] * transmittance
         self.render = render
+    
+    @property
+    def smoke_density_factor(self):
+        return self._smoke_density_factor[None]
+
+    @smoke_density_factor.setter
+    def smoke_density_factor(self, value):
+        self._smoke_density_factor[None] = value
 
     def get_vertical_field_of_view(self, degrees=True):  # Get vertical field of view. Default is 33°.
         return math.atan(self._fov[None] / 2) * 2 * (180 / math.pi if degrees else 1)
@@ -193,7 +204,8 @@ class DisplayWindow():
         ray_tracing_stop_threshold=0.01,  # 0 ~ 1
         background=[0.2, 0.2, 0.2],
         init_taichi=True,
-        taichi_arch=ti.gpu
+        taichi_arch=ti.gpu,
+        smoke_density_factor=1.
     ):
         if init_taichi:
             ti.init(arch=taichi_arch)
@@ -230,7 +242,8 @@ class DisplayWindow():
             point_lights_pos_taichi=point_lights_pos,
             point_lights_intensity_taichi=point_lights_intensity,
             ray_tracing_stop_threshold=ray_tracing_stop_threshold,
-            background=background)
+            background=background,
+            smoke_density_factor=smoke_density_factor)
 
         # Window
         self.resolution = resolution
@@ -297,6 +310,7 @@ def plot_volume(
     background=[0.2, 0.2, 0.2],
     init_taichi=True,
     taichi_arch=ti.gpu,
+    smoke_density_factor=1.,
 
     title="Render",
     update_light_each_step=False,
@@ -313,7 +327,8 @@ def plot_volume(
         ray_tracing_stop_threshold=ray_tracing_stop_threshold,
         background=background,
         init_taichi=init_taichi,
-        taichi_arch=taichi_arch
+        taichi_arch=taichi_arch,
+        smoke_density_factor=smoke_density_factor
     )
 
     window.show(
