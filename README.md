@@ -20,3 +20,7 @@ pip install taichi-volume-renderer
 The simplest example would be rendering a static scene, with smoke density, color, and lighting all specified by a few NumPy arrays. See `examples/example.py`.
 
 ![0](/images/0.png)
+
+The taichi-volume-renderer is built to work flawlessly with Taichi, enabling dynamic scene visualization. The following example solves a partial differential equation (PDE) while visualizing the system's evolution in real-time. See `examples/pde.py`.
+
+![1](/images/1.png)
