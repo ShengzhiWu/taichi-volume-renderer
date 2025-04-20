@@ -4,6 +4,7 @@ import math
 import numpy as np
 import taichi as ti
 from taichi_volume_renderer import DisplayWindow
+import imageio
 
 ti.init(arch=ti.cuda)
 
@@ -88,7 +89,20 @@ def one_step(iteration, scene):
     for substep in range(50):  # 5
         update()
 
+animation = []
+def image_process(iteration, image):
+    global animation
+    if iteration in range(0, 1050, 50):
+        image_numpy = np.clip(np.transpose(image.to_numpy()[:, ::-1], [1, 0, 2]) * 256, 0, 255.9)
+        animation.append(image_numpy)
+    if iteration == 1050:
+        animation = np.array(animation, dtype=np.uint8)
+        imageio.mimsave('output.gif', animation, duration=0.3, loop=0)  # Save animation.
+        print("Animation saved")
+        del animation
+
 window.show(
     callback=one_step,
+    image_process=image_process,
     update_light_each_step=True,
     title=f"Gray-Scott Model, F={F}, k={k}")
