@@ -13,7 +13,9 @@ class Scene():
         point_lights_intensity_taichi,
         ray_tracing_stop_threshold=0.01,  # 0 ~ 1
         background=[0.2, 0.2, 0.2],
-        smoke_density_factor=1.
+        smoke_density_factor=1.,
+        ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
+        light_ray_tracing_step_size_factor=3.  # The smaller the value here, the higher the shadow quality.
     ):
         # Volume data
         self.smoke_density = smoke_density_taichi  # Smoke density
@@ -37,9 +39,9 @@ class Scene():
 
         # Ray tracing
         self._step_length = ti.field(dtype=ti.f32, shape=())
-        self._step_length[None] = 1 / np.max(smoke_density_taichi.shape) * 1.  # The smaller the value here, the higher the ray tracing quality.
+        self._step_length[None] = 1 / np.max(smoke_density_taichi.shape) * ray_tracing_step_size_factor
         self._step_length_light = ti.field(dtype=ti.f32, shape=())
-        self._step_length_light[None] = 1 / np.max(smoke_density_taichi.shape) * 3.  # The smaller the value here, the higher the shadow quality.
+        self._step_length_light[None] = 1 / np.max(smoke_density_taichi.shape) * light_ray_tracing_step_size_factor
         self._stop_threshold = ti.field(dtype=ti.f32, shape=())
         self._stop_threshold[None] = ray_tracing_stop_threshold  # Terminate ray tracing when the accumulated transparency of the view ray falls below this value.
 
@@ -205,7 +207,9 @@ class DisplayWindow():
         background=[0.2, 0.2, 0.2],
         init_taichi=True,
         taichi_arch=ti.gpu,
-        smoke_density_factor=1.
+        smoke_density_factor=1.,
+        ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
+        light_ray_tracing_step_size_factor=3.  # The smaller the value here, the higher the shadow quality.
     ):
         if init_taichi:
             ti.init(arch=taichi_arch)
@@ -243,7 +247,9 @@ class DisplayWindow():
             point_lights_intensity_taichi=point_lights_intensity,
             ray_tracing_stop_threshold=ray_tracing_stop_threshold,
             background=background,
-            smoke_density_factor=smoke_density_factor)
+            smoke_density_factor=smoke_density_factor,
+            ray_tracing_step_size_factor=ray_tracing_step_size_factor,
+            light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor)
 
         # Window
         self.resolution = resolution
@@ -311,6 +317,8 @@ def plot_volume(
     init_taichi=True,
     taichi_arch=ti.gpu,
     smoke_density_factor=1.,
+    ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
+    light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
 
     title="Render",
     update_light_each_step=False,
@@ -328,7 +336,9 @@ def plot_volume(
         background=background,
         init_taichi=init_taichi,
         taichi_arch=taichi_arch,
-        smoke_density_factor=smoke_density_factor
+        smoke_density_factor=smoke_density_factor,
+        ray_tracing_step_size_factor=ray_tracing_step_size_factor,
+        light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor
     )
 
     window.show(
