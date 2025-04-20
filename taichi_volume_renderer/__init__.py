@@ -2,7 +2,7 @@ import math
 import numpy as np
 import taichi as ti
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 class Scene():
     def __init__(
@@ -39,9 +39,10 @@ class Scene():
 
         # Ray tracing
         self._step_length = ti.field(dtype=ti.f32, shape=())
-        self._step_length[None] = 1 / np.max(smoke_density_taichi.shape) * ray_tracing_step_size_factor
+        pixel_size = 1 / np.max(smoke_density_taichi.shape)
+        self._step_length[None] = pixel_size * ray_tracing_step_size_factor
         self._step_length_light = ti.field(dtype=ti.f32, shape=())
-        self._step_length_light[None] = 1 / np.max(smoke_density_taichi.shape) * light_ray_tracing_step_size_factor
+        self._step_length_light[None] = pixel_size * light_ray_tracing_step_size_factor
         self._stop_threshold = ti.field(dtype=ti.f32, shape=())
         self._stop_threshold[None] = ray_tracing_stop_threshold  # Terminate ray tracing when the accumulated transparency of the view ray falls below this value.
 
@@ -49,16 +50,17 @@ class Scene():
         self.light_density = ti.Vector.field(3, dtype=ti.f32, shape=smoke_density_taichi.shape)
 
         @ti.kernel
-        def update_light():  # Update light_density
+        def update_light():  # Update shadow.
             for i, j, k in self.light_density:
                 self.light_density[i, j, k] = ti.Vector([0., 0., 0.])
-                pos = ti.Vector([float(i), float(j), float(k)]) / self.smoke_density.shape - 0.5
+                pos = ti.Vector([i + 0.5, j + 0.5, k + 0.5]) / self.smoke_density.shape - 0.5
                 for l in ti.ndrange(self.point_lights_pos.shape[0]):
                     d = self.point_lights_pos[l] - pos
                     distance_squared = ti.math.dot(d, d)
                     transmittance = 1.
                     d = d.normalized()
                     pos_2 = pos
+                    # pos_2 += d * (pixel_size * 0.5)
                     while True:
                         if pos_2.x > 0.5 and d.x > 0 or pos_2.x < -0.5 and d.x < 0:
                             break
