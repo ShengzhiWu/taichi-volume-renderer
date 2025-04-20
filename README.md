@@ -24,3 +24,7 @@ The simplest example would be rendering a static scene, with smoke density, colo
 The taichi-volume-renderer is built to work flawlessly with Taichi, enabling dynamic scene visualization. The following example solves a partial differential equation (PDE), specifically the Gray-Scott model, while visualizing the system's evolution in real-time. See `examples/pde.py`.
 
 ![1](/images/1.png)
+
+Volume rendering provides an impressive capability to display faintly visible objects with indistinct boundaries. The following example visualizes a Lorenz attractor. See `examples/strange_attractor.py`.
+
+![2](/images/lorenz-attractor.png)
