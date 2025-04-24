@@ -28,3 +28,12 @@ The taichi-volume-renderer is built to work flawlessly with Taichi, enabling dyn
 Volume rendering provides an impressive capability to display faintly visible objects with indistinct boundaries. The following example visualizes a Lorenz attractor. See `examples/strange_attractor.py`.
 
 ![2](/images/lorenz-attractor.png)
+
+## TODO
+
+1. Ray intersection with the scene
+2. Refraction
+3. Reflection
+4. Secondary scattering
+5. Sparse grid
+6. OpenVDB support
