@@ -31,9 +31,11 @@ Volume rendering provides an impressive capability to display faintly visible ob
 
 ## TODO
 
-1. Ray intersection with the scene
-2. Refraction
-3. Reflection
-4. Secondary scattering
-5. Sparse grid
-6. OpenVDB support
+1. Default lights
+2. Background images
+3. Ray intersection with the scene
+4. Refraction
+5. Reflection
+6. Secondary scattering
+7. Sparse grid
+8. OpenVDB support
