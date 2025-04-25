@@ -17,17 +17,25 @@ pip install taichi-volume-renderer
 
 ## Usage
 
+### Interactive Static Scenes
+
 The simplest example would be rendering a static scene, with smoke density, color, and lighting all specified by a few NumPy arrays. See `examples/example.py`.
 
 ![0](/images/0.jpg)
+
+Volume rendering provides an impressive capability to display faintly visible objects with indistinct boundaries. The following example visualizes a Lorenz attractor. See `examples/strange_attractor.py`.
+
+![2](/images/lorenz-attractor.jpg)
+
+### High-Performance Real-Time Visualization
 
 The taichi-volume-renderer is built to work flawlessly with Taichi, enabling dynamic scene visualization. The following example solves a partial differential equation (PDE), specifically the Gray-Scott model, while visualizing the system's evolution in real-time. The script also saves an `.gif` animation. See `examples/pde.py`.
 
 ![1](/images/pde.gif)
 
-Volume rendering provides an impressive capability to display faintly visible objects with indistinct boundaries. The following example visualizes a Lorenz attractor. See `examples/strange_attractor.py`.
+I also made a video demonstrating the dazzlingly complex behavior of this system through parameter changes. Check it out at https://www.bilibili.com/video/BV1g7LVzVEQW/
 
-![2](/images/lorenz-attractor.jpg)
+### VDB
 
 You can also render VDB data with taichi-volume-renderer. See `examples/openvdb.py`.
 
