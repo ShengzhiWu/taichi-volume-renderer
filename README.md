@@ -37,7 +37,7 @@ I also made a video demonstrating the dazzlingly complex behavior of this system
 
 ### VDB
 
-You can also render VDB data with taichi-volume-renderer. See `examples/openvdb.py`.
+You can also render VDB data with taichi-volume-renderer. See `examples/openvdb.py`. We can apply general lighting, or illuminate the volume from within like cloud-to-cloud lightning.
 
 ![cloud](images/cloud.jpg)
 
