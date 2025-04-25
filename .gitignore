@@ -2,3 +2,4 @@ dist/
 taichi_volume_renderer.egg-info/
 build/
 .pypirc
+images/original_images/
