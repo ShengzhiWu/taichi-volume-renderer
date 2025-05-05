@@ -41,12 +41,17 @@ You can also render VDB data with taichi-volume-renderer. See `examples/openvdb.
 
 ![cloud](images/cloud.jpg)
 
+### Refraction
+
+![refraction](images/refraction.png)
+
+See `examples/refraction.py`.
+
 ## TODO
 
 1. Default lights
 2. Background images
 3. Ray intersection with the scene
-4. Refraction
-5. Reflection
-6. Secondary scattering
-7. Sparse grid
+4. Reflection
+5. Secondary scattering
+6. Sparse grid
