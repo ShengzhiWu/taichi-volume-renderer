@@ -4,7 +4,7 @@ import taichi_volume_renderer
 # Volume
 x, y, z = np.mgrid[-0.5:0.5:100j, -0.5:0.5:100j, -0.5:0.5:100j]
 smoke_density_numpy = np.zeros_like(x)
-# volume_numpy[x ** 2 + y ** 2 + z ** 2 < 0.5 ** 2] = 5  # Single sphere
+# smoke_density_numpy[x ** 2 + y ** 2 + z ** 2 < 0.5 ** 2] = 5  # Single sphere
 for x_0 in [-0.25, 0.25]:  # 8 spheres
     for y_0 in [-0.25, 0.25]:
         for z_0 in [-0.25, 0.25]:
