@@ -51,7 +51,9 @@ The following example uses the Position Based Fluids (PBF) algorithm (Macklin, M
 
 ![pbf3d](images/pbf3d.gif)
 
-Continuous distribution of refractive indices is supported, allowing simulating phenomena such as heat haze or mirages.
+Continuous distribution of refractive indices is supported, allowing simulating phenomena such as heat haze or mirages. See `examples/mirage.py`.
+
+![mirage](images/mirage.jpg)
 
 ## TODO
 
