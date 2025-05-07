@@ -2,7 +2,7 @@ import math
 import numpy as np
 import taichi as ti
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 class Scene():
     def __init__(
@@ -16,7 +16,8 @@ class Scene():
         background=[0.2, 0.2, 0.2],
         smoke_density_factor=1.,
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
-        light_ray_tracing_step_size_factor=3.  # The smaller the value here, the higher the shadow quality.
+        light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
+        ray_tracing_max_steps=10000  # This only takes effect in scenes where light rays may bend, such as those containing refractive materials.
     ):
         # Volume data
         self.smoke_density = smoke_density_taichi  # Smoke density
@@ -141,12 +142,9 @@ class Scene():
             distance_to_sphere = self._camera_distance[None] - 0.866025  # The constant here is 0.5 * math.sqrt(2)
             if distance_to_sphere > 0:
                 pos += d * distance_to_sphere
-            while True:
-                if pos.x > 0.5 and d.x > 0 or pos.x < -0.5 and d.x < 0:
-                    break
-                if pos.y > 0.5 and d.y > 0 or pos.y < -0.5 and d.y < 0:
-                    break
-                if pos.z > 0.5 and d.z > 0 or pos.z < -0.5 and d.z < 0:
+            i = ray_tracing_max_steps
+            while i > 0:
+                if (pos.x > 0.5 and d.x > 0 or pos.x < -0.5 and d.x < 0) or (pos.y > 0.5 and d.y > 0 or pos.y < -0.5 and d.y < 0) or (pos.z > 0.5 and d.z > 0 or pos.z < -0.5 and d.z < 0):
                     break
                 if transmittance < self._stop_threshold[None]:
                     break
@@ -154,6 +152,9 @@ class Scene():
                 pos, d, pixels_color, transmittance, to_break = self.ray_tracing_one_step(pos, d, pixels_color, transmittance)
                 if to_break:
                     break
+
+                i -= 1
+            
             pixels_color += self._background[None] * transmittance
             return pixels_color
         self.ray_tracing = ray_tracing
@@ -270,7 +271,8 @@ class DisplayWindow():
         taichi_arch=ti.gpu,
         smoke_density_factor=1.,
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
-        light_ray_tracing_step_size_factor=3.  # The smaller the value here, the higher the shadow quality.
+        light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
+        ray_tracing_max_steps=10000  # This only takes effect in scenes where light rays may bend, such as those containing refractive materials.
     ):
         if init_taichi:
             ti.init(arch=taichi_arch)
@@ -317,10 +319,11 @@ class DisplayWindow():
             background=background,
             smoke_density_factor=smoke_density_factor,
             ray_tracing_step_size_factor=ray_tracing_step_size_factor,
-            light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor)
+            light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
+            ray_tracing_max_steps=ray_tracing_max_steps)
 
         # Window
-        self.resolution = resolution
+        self.resolution = tuple(resolution)
         self.pixels = ti.Vector.field(3, dtype=ti.f32, shape=resolution)
 
         # Interaction
@@ -388,14 +391,16 @@ def plot_volume(
     smoke_density_factor=1.,
     ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
     light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
+    ray_tracing_max_steps=10000,  # This only takes effect in scenes where light rays may bend, such as those containing refractive materials.
+    camera_phi=0,
+    camera_theta=0,
+    camera_distance=3,
 
     title="Render",
     update_light_each_step=False,
     callback=None,  # Users can update smoke density, rotate camera etc. each step by assigning this callback function.
     image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
-    enable_mouse_rotating=True,
-    camera_phi=0,
-    camera_theta=0
+    enable_mouse_rotating=True
 ):
     window = DisplayWindow(
         smoke_density=smoke_density,
@@ -410,10 +415,12 @@ def plot_volume(
         taichi_arch=taichi_arch,
         smoke_density_factor=smoke_density_factor,
         ray_tracing_step_size_factor=ray_tracing_step_size_factor,
-        light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor
+        light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
+        ray_tracing_max_steps=ray_tracing_max_steps
     )
     window.scene.set_camera_phi(camera_phi)
     window.scene.set_camera_theta(camera_theta)
+    window.scene.camera_distance = camera_distance
 
     window.show(
         title=title,
