@@ -43,9 +43,15 @@ You can also render VDB data with taichi-volume-renderer. See `examples/openvdb.
 
 ### Refraction
 
+Refractive volume rendering allows visualizing objects with refractive behavior without constructing a mesh. See `examples/refraction.py`, where a glass ball is rendered.
+
 ![refraction](images/refraction.png)
 
-See `examples/refraction.py`.
+The following example uses the Position Based Fluids (PBF) algorithm (Macklin, M. and Müller, M., 2013) to simulate fluids in real-time and renders them as a transparent material. The code is adapted from Ye Kuang's Taichi demo, [pbf2d.py](https://github.com/taichi-dev/taichi/blob/master/python/taichi/examples/simulation/pbf2d.py). Since no meshing is required, the entire pipeline can be executed on the GPU. See `examples/pbf3d.py`.
+
+![pbf3d](images/pbf3d.gif)
+
+Continuous distribution of refractive indices is supported, allowing simulating phenomena such as heat haze or mirages.
 
 ## TODO
 
