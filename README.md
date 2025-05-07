@@ -61,6 +61,7 @@ Continuous distribution of refractive indices is supported, allowing simulating 
 2. Background images
 3. Ray intersection with the scene
 4. Supports volumetric data with non-cuboid shapes
-5. Reflection
-6. Secondary scattering
-7. Sparse grid
+5. Draw disks and lines
+6. Reflection
+7. Secondary scattering
+8. Sparse grid
