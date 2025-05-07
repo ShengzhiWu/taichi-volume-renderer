@@ -57,11 +57,12 @@ Continuous distribution of refractive indices is supported, allowing simulating 
 
 ## TODO
 
-1. Default lights
-2. Background images
-3. Ray intersection with the scene
-4. Supports volumetric data with non-cuboid shapes
-5. Draw disks and lines
-6. Reflection
-7. Secondary scattering
-8. Sparse grid
+1. Adjust the camera distance with scroll wheel
+2. Default lights
+3. Background images
+4. Ray intersection with the scene
+5. Supports volumetric data with non-cuboid shapes
+6. Draw disks and lines
+7. Reflection
+8. Secondary scattering
+9. Sparse grid
