@@ -5,8 +5,6 @@ import taichi_volume_renderer.canvas as canvas
 
 ti.init(arch=ti.gpu)
 
-# print(ti.Vector(ti.Vector([1, 2, 3])))
-
 N = 100
 smoke, smoke_color=canvas.empty_canvas(N)
 
