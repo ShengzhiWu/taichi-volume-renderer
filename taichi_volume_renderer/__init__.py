@@ -2,7 +2,7 @@ import math
 import numpy as np
 import taichi as ti
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 class Scene():
     def __init__(
@@ -160,7 +160,7 @@ class Scene():
         self.ray_tracing = ray_tracing
 
         @ti.kernel
-        def render(pixels: ti.template()):
+        def render(pixels: ti.template()):  # type: ignore
             camera_pos = self._camera_distance[None] * ti.Vector([
                 ti.cos(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
                 ti.sin(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),

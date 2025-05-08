@@ -1,5 +1,5 @@
 # taichi-volume-renderer
-taichi-volume-renderer is a python package for real-time GPU volume rendering based on [taichi](https://github.com/taichi-dev/taichi).
+**taichi-volume-renderer** is a python package for real-time **GPU** volume rendering based on [taichi](https://github.com/taichi-dev/taichi).
 
 You don't need to understand Taichi to use this package. For the simplest application — visualizing a 3D scalar NumPy array `a` as volume smoke — you can do it with just one line of code:
 
@@ -21,19 +21,29 @@ pip install taichi-volume-renderer
 
 The simplest example would be rendering a static scene, with smoke density, color, and lighting all specified by a few NumPy arrays. See `examples/example.py`.
 
-![0](/images/0.jpg)
+![0](images/0.jpg)
 
 Volume rendering provides an impressive capability to display faintly visible objects with indistinct boundaries. The following example visualizes a Lorenz attractor. See `examples/strange_attractor.py`.
 
-![2](/images/lorenz-attractor.jpg)
+![lorenz-attractor](images/lorenz-attractor.jpg)
 
 ### High-Performance Real-Time Visualization
 
-The taichi-volume-renderer is built to work flawlessly with Taichi, enabling dynamic scene visualization. The following example solves a partial differential equation (PDE), specifically the Gray-Scott model, while visualizing the system's evolution in real-time. The script also saves an `.gif` animation. See `examples/pde.py`.
+The **taichi-volume-renderer** is built to work flawlessly with Taichi, enabling dynamic scene visualization. The following example solves a partial differential equation (PDE), specifically the Gray-Scott model, while visualizing the system's evolution in real-time. The script also saves an `.gif` animation. See `examples/pde.py`.
 
-![1](/images/pde.gif)
+![pde](images/pde.gif)
 
 I also made a video demonstrating the dazzlingly complex behavior of this system through parameter changes. Check it out at https://www.bilibili.com/video/BV1g7LVzVEQW/
+
+### Canvas
+
+You can use **taichi_volume_renderer.canvas** to draw in 3D space. This module offers rich and user-friendly drawing functionalities.
+
+Note that these drawing methods fundamentally differ from traditional 3D mesh creation in conventional modeling software—here, objects are rendered as bitmaps in a 3D voxel array. This relationship is analogous to how SVG vector graphics differ from BMP raster images in 2D. Such an approach unlocks possibilities for entirely new 3D design workflows.
+
+See `examples/canvas.py`.
+
+![canvas](images/canvas.jpg)
 
 ### VDB
 
