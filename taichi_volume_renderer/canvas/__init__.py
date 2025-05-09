@@ -343,4 +343,12 @@ def fill_platonic_solid(
         density,
         color)
 
-# TODO: Particles to volume
+# TODO: Plot function
+
+# TODO: def draw_particles_simple(field_taichi, particle, density)
+
+# TODO: def draw_particles(smoke_density_taichi, smoke_color_taichi, particle, density, color)
+
+# TODO: def gaussian_blur(smoke_density_taichi, smoke_color_taichi, radius)
+
+# TODO: def draw_volume(smoke_density_taichi, smoke_color_taichi, smoke_density_taichi_to_draw, smoke_color_taichi_to_draw)
