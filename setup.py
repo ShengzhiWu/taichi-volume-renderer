@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="taichi-volume-renderer",
-    version="1.5.0",
+    version="1.6.0",
     author="Shengzhi Wu",
     author_email="e1124755@u.nus.edu",
     description="A python package for real-time GPU volume rendering based on taichi",
@@ -20,5 +20,5 @@ setuptools.setup(
         "Operating System :: OS Independent",
         "Topic :: Scientific/Engineering :: Visualization"
     ],
-    keywords="taichi volume rendering 3d visualization"
+    keywords="taichi volume rendering 3d visualization gaussian splatting point cloud graphics"
 )

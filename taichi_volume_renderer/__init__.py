@@ -1,8 +1,7 @@
-import math
 import numpy as np
 import taichi as ti
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 class Scene():
     def __init__(
@@ -11,6 +10,7 @@ class Scene():
         smoke_color_taichi,
         point_lights_pos_taichi,
         point_lights_intensity_taichi,
+        lighting=True,
         index_of_refraction_taichi=None,
         ray_tracing_stop_threshold=0.01,  # 0 ~ 1
         background=[0.2, 0.2, 0.2],
@@ -51,35 +51,42 @@ class Scene():
 
         # Light density in volume
         self.light_density = ti.Vector.field(3, dtype=ti.f32, shape=smoke_density_taichi.shape)
+        self.light_density.from_numpy(np.ones(list(smoke_density_taichi.shape) + [3]))
 
-        @ti.kernel
-        def update_light():  # Update shadow.
-            for i, j, k in self.light_density:
-                self.light_density[i, j, k] = ti.Vector([0., 0., 0.])
-                pos = ti.Vector([i + 0.5, j + 0.5, k + 0.5]) / self.smoke_density.shape - 0.5
-                for l in ti.ndrange(self.point_lights_pos.shape[0]):
-                    d = self.point_lights_pos[l] - pos
-                    distance_squared = ti.math.dot(d, d)
-                    transmittance = 1.
-                    d = d.normalized()
-                    pos_2 = pos
-                    # pos_2 += d * (pixel_size * 0.5)
-                    while True:
-                        if pos_2.x > 0.5 and d.x > 0 or pos_2.x < -0.5 and d.x < 0:
-                            break
-                        if pos_2.y > 0.5 and d.y > 0 or pos_2.y < -0.5 and d.y < 0:
-                            break
-                        if pos_2.z > 0.5 and d.z > 0 or pos_2.z < -0.5 and d.z < 0:
-                            break
-                        pos_maped = (pos_2 + 0.5) * self.smoke_density.shape
-                        x_int = int(pos_maped.x)
-                        y_int = int(pos_maped.y)
-                        z_int = int(pos_maped.z)
-                        if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
-                            transmittance *= 1 - self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length_light[None]
-                        pos_2 += d * self._step_length_light[None]
-                    self.light_density[i, j, k] += self.point_lights_intensity[l] * (transmittance / distance_squared)
-        self.update_light = update_light
+        if lighting:
+            @ti.kernel
+            def update_light():  # Update shadow.
+                for i, j, k in self.light_density:
+                    self.light_density[i, j, k] = ti.Vector([0., 0., 0.])
+                    pos = ti.Vector([i + 0.5, j + 0.5, k + 0.5]) / self.smoke_density.shape - 0.5
+                    for l in ti.ndrange(self.point_lights_pos.shape[0]):
+                        d = self.point_lights_pos[l] - pos
+                        distance_squared = ti.math.dot(d, d)
+                        transmittance = 1.
+                        d = d.normalized()
+                        pos_2 = pos
+                        # pos_2 += d * (pixel_size * 0.5)
+                        while True:
+                            if pos_2.x > 0.5 and d.x > 0 or pos_2.x < -0.5 and d.x < 0:
+                                break
+                            if pos_2.y > 0.5 and d.y > 0 or pos_2.y < -0.5 and d.y < 0:
+                                break
+                            if pos_2.z > 0.5 and d.z > 0 or pos_2.z < -0.5 and d.z < 0:
+                                break
+                            pos_maped = (pos_2 + 0.5) * self.smoke_density.shape
+                            x_int = int(pos_maped.x)
+                            y_int = int(pos_maped.y)
+                            z_int = int(pos_maped.z)
+                            if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
+                                transmittance *= 1 - self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length_light[None]
+                            pos_2 += d * self._step_length_light[None]
+                        self.light_density[i, j, k] += self.point_lights_intensity[l] * (transmittance / distance_squared)
+            self.update_light = update_light
+        else:
+            @ti.kernel
+            def update_light():  # Update shadow.
+                pass
+            self.update_light = update_light
 
         if self.index_of_refraction is None:
             @ti.func
@@ -139,7 +146,7 @@ class Scene():
         def ray_tracing(pos, d):
             pixels_color = ti.Vector([0., 0., 0.])
             transmittance = 1.
-            distance_to_sphere = self._camera_distance[None] - 0.866025  # The constant here is 0.5 * math.sqrt(2)
+            distance_to_sphere = self._camera_distance[None] - 0.866025  # The constant here is 0.5 * 2 ** 0.5
             if distance_to_sphere > 0:
                 pos += d * distance_to_sphere
             i = ray_tracing_max_steps
@@ -195,26 +202,26 @@ class Scene():
         self._smoke_density_factor[None] = value
 
     def get_vertical_field_of_view(self, degrees=True):  # Get vertical field of view. Default is 33°.
-        return math.atan(self._fov[None] / 2) * 2 * (180 / math.pi if degrees else 1)
+        return np.atan(self._fov[None] / 2) * 2 * (180 / np.pi if degrees else 1)
 
     def set_vertical_field_of_view(self, angle, degrees=True):  # Set vertical field of view. Default is 33°.
-        self._fov[None] = 2 * math.tan(angle * (math.pi / 180 if degrees else 1) / 2)
+        self._fov[None] = 2 * np.tan(angle * (np.pi / 180 if degrees else 1) / 2)
 
     def get_camera_phi(self, degrees=True):
-        return self._camera_phi[None] * (180 / math.pi if degrees else 1)
+        return self._camera_phi[None] * (180 / np.pi if degrees else 1)
 
     def set_camera_phi(self, angle, degrees=True):
-        self._camera_phi[None] = angle * (math.pi / 180 if degrees else 1)
+        self._camera_phi[None] = angle * (np.pi / 180 if degrees else 1)
 
     def get_camera_theta(self, degrees=True):
-        return self._camera_theta[None] * (180 / math.pi if degrees else 1)
+        return self._camera_theta[None] * (180 / np.pi if degrees else 1)
 
     def set_camera_theta(self, angle, degrees=True):
-        self._camera_theta[None] = angle * (math.pi / 180 if degrees else 1)
-        if self._camera_theta[None] < math.pi * -0.5:
-            self._camera_theta[None] = math.pi * -0.5
-        if self._camera_theta[None] > math.pi * 0.5:
-            self._camera_theta[None] = math.pi * 0.5
+        self._camera_theta[None] = angle * (np.pi / 180 if degrees else 1)
+        if self._camera_theta[None] < np.pi * -0.5:
+            self._camera_theta[None] = np.pi * -0.5
+        if self._camera_theta[None] > np.pi * 0.5:
+            self._camera_theta[None] = np.pi * 0.5
     
     @property
     def camera_distance(self):
@@ -264,6 +271,7 @@ class DisplayWindow():
         index_of_refraction=None,  # Can be None, NumPy array or Taichi vector field.
         point_lights_pos=None,  # Can be None, NumPy array or Taichi vector field. If left None, default lights applied.
         point_lights_intensity=None,  # Can be None, NumPy array or Taichi vector field. If left None, default lights applied.
+        lighting=True,
         resolution=(720, 720),
         ray_tracing_stop_threshold=0.01,  # 0 ~ 1
         background=[0.2, 0.2, 0.2],
@@ -315,6 +323,7 @@ class DisplayWindow():
             index_of_refraction_taichi=index_of_refraction,
             point_lights_pos_taichi=point_lights_pos,
             point_lights_intensity_taichi=point_lights_intensity,
+            lighting=lighting,
             ray_tracing_stop_threshold=ray_tracing_stop_threshold,
             background=background,
             smoke_density_factor=smoke_density_factor,
@@ -330,6 +339,7 @@ class DisplayWindow():
         self.mouse_pressed = False
         self.cursor_start_pos = (-1, -1)
         self.camera_rotation_speed = 230.  # Unit: degree pre image width or height
+        self.camera_zooming_speed = 0.0007
     
     def mouse_pressed_event(self, pos):
         pass
@@ -337,6 +347,9 @@ class DisplayWindow():
     def mouse_drag_event(self, pos, pos_delta):
         self.scene.set_camera_phi(self.scene.get_camera_phi() - pos_delta[0] * self.camera_rotation_speed)
         self.scene.set_camera_theta(self.scene.get_camera_theta() - pos_delta[1] * self.camera_rotation_speed)
+
+    def mouse_wheel_event(self, delta):
+        self.scene.camera_distance *= (1 - self.camera_zooming_speed) ** delta[1]
     
     def show(
             self,
@@ -350,7 +363,7 @@ class DisplayWindow():
 
         gui = ti.GUI(title, res=self.resolution)
         iteration = 0
-        while not gui.get_event(ti.GUI.ESCAPE, ti.GUI.EXIT):
+        while gui.running:
             if update_light_each_step:
                 self.scene.update_light()
             self.scene.render(self.pixels)
@@ -372,6 +385,8 @@ class DisplayWindow():
                         self.cursor_start_pos = cursor_pos
                 else:
                     self.mouse_pressed = False
+                for event in gui.get_events(ti.GUI.WHEEL):
+                    self.mouse_wheel_event(event.delta)
 
             if not callback is None:
                 callback(iteration, self.scene)
@@ -383,6 +398,7 @@ def plot_volume(
     index_of_refraction=None,  # Can be None, NumPy array or Taichi vector field.
     point_lights_pos=None,  # Can be None, NumPy array or Taichi vector field. If left None, default lights applied.
     point_lights_intensity=None,  # Can be None, NumPy array or Taichi vector field. If left None, default lights applied.
+    lighting=True,
     resolution=(720, 720),
     ray_tracing_stop_threshold=0.01,  # 0 ~ 1
     background=[0.2, 0.2, 0.2],
@@ -408,6 +424,7 @@ def plot_volume(
         index_of_refraction=index_of_refraction,
         point_lights_pos=point_lights_pos,
         point_lights_intensity=point_lights_intensity,
+        lighting=lighting,
         resolution=resolution,
         ray_tracing_stop_threshold=ray_tracing_stop_threshold,
         background=background,
