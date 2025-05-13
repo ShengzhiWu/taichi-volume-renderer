@@ -30,6 +30,7 @@ def clean(
         smoke_density_taichi[I] = 0
         smoke_color_taichi[I] = ti.Vector([1, 1, 1])
 
+@ti.kernel
 @ti.func
 def mix(color_1, density_1, color_2, density_2):
     return (color_1 * density_1 + color_2 * density_2) / (density_1 + density_2)
