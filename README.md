@@ -79,12 +79,12 @@ Continuous distribution of refractive indices is supported, allowing simulating 
 
 ## TODO
 
-1. Default lights
-2. Background images
-3. Ray intersection with the scene
-4. Supports volumetric data with non-cuboid shapes
-5. More features of canvas
-6. Reflection
-7. Anisotropic volume based on spherical harmonics
-8. Secondary scattering
-9. Sparse grid
+- Default lights
+- Background images
+- Ray intersection with the scene
+- Supports volumetric data with non-cuboid shapes
+- More features of canvas
+- Reflection
+- Anisotropic volume based on spherical harmonics
+- Secondary scattering
+- Sparse grid
