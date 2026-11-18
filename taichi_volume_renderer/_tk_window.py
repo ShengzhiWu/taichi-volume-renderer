@@ -1,6 +1,7 @@
 from time import perf_counter, sleep
 from types import SimpleNamespace
 import tkinter as tk
+from tkinter import messagebox
 
 import numpy as np
 import taichi as ti
@@ -11,7 +12,7 @@ class Window:
 
     _KEYS = {"Escape": ti.GUI.ESCAPE, "Tab": ti.GUI.TAB, "ISO_Left_Tab": ti.GUI.TAB}
 
-    def __init__(self, title, resolution, resize=False):
+    def __init__(self, title, resolution, resize=False, context_menu=()):
         self._root = tk.Tk()
         self._root.title(title)
         self._title = title
@@ -37,6 +38,11 @@ class Window:
         self._view.bind("<ButtonPress-1>", self._mouse_press)
         self._view.bind("<ButtonRelease-1>", self._mouse_release)
         self._root.bind("<MouseWheel>", self._scroll)
+        if context_menu:
+            self._menu = tk.Menu(self._root, tearoff=False)
+            for label, action in context_menu:
+                self._menu.add_command(label=label, command=lambda action=action: action(self))
+            self._root.bind("<Button-3>", self._open_context_menu)
 
         self.running = True
         self._keys = set()
@@ -73,6 +79,26 @@ class Window:
 
     def _scroll(self, event):
         self._wheel.append(SimpleNamespace(delta=(0, event.delta)))
+
+    def _open_context_menu(self, event):
+        self._clear_input(event)
+        try:
+            self._menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._menu.grab_release()
+
+    def copy_text(self, text):
+        self._root.clipboard_clear()
+        self._root.clipboard_append(text)
+
+    def read_text(self):
+        try:
+            return self._root.clipboard_get()
+        except tk.TclError as exc:
+            raise ValueError("Clipboard has no text") from exc
+
+    def show_error(self, title, message):
+        messagebox.showerror(title, message, parent=self._root)
 
     def poll_events(self):
         self._frame_start = perf_counter()

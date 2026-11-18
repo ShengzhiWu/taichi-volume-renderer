@@ -1,6 +1,7 @@
 """Render a packed-color CXW world with the sparse smoke ray marcher."""
 
 import argparse
+import json
 from time import perf_counter
 
 import taichi as ti
@@ -16,7 +17,16 @@ class CXWViewer(DisplayWindow):
         self._reset_pressed = False
         self._last_frame = perf_counter()
         self.show(title="Sparse smoke | Drag to look | WASD move | Q/E height | Tab orbit/fly | R reset",
-                  resize=True)
+                  resize=True, context_menu=(("复制视角", self._copy_view), ("粘贴视角", self._paste_view)))
+
+    def _copy_view(self, window):
+        window.copy_text(json.dumps(self.scene.get_camera_pose()))
+
+    def _paste_view(self, window):
+        try:
+            self.scene.set_camera_pose(json.loads(window.read_text()))
+        except (ValueError, TypeError, OverflowError):
+            window.show_error("粘贴视角", "剪贴板中没有有效的视角 JSON。")
 
     def mouse_drag_event(self, pos, pos_delta):
         if self.fly:

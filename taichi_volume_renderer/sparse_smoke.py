@@ -5,6 +5,7 @@ import taichi as ti
 
 from . import _OrbitScene
 from .cxw import load_cxw
+from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 from ._smoke import composite_sample
 
 
@@ -170,6 +171,49 @@ class SparseSmokeScene(_OrbitScene):
         backward = basis @ [np.cos(phi) * np.cos(theta), np.sin(phi) * np.cos(theta), np.sin(theta)]
         right = basis @ [-np.sin(phi), np.cos(phi), 0.0]
         return backward, right
+
+    def get_camera_pose(self):
+        """Return the world position, XYZW rotation, and orbit distance in voxel units."""
+        backward, right = self._camera_axes()
+        forward = -backward
+        rotation = np.column_stack((right, np.cross(forward, right), forward))
+        distance = self.camera_distance * self._scale
+        position = self._target[None].to_numpy() + distance * backward
+        quaternion = rotation_matrix_to_quaternion(rotation)
+        return {
+            "position": position.tolist(),
+            "rotation": quaternion[[1, 2, 3, 0]].tolist(),
+            "orbit_distance": distance,
+        }
+
+    def set_camera_pose(self, pose):
+        """Restore a camera pose in CXW world coordinates."""
+        if not isinstance(pose, dict) or "position" not in pose or "rotation" not in pose:
+            raise ValueError("Expected a camera position and rotation")
+        position = np.asarray(pose["position"], dtype=np.float64)
+        quaternion = np.asarray(pose["rotation"], dtype=np.float64)
+        distance = float(pose.get("orbit_distance", 64.0))
+        if (position.shape != (3,) or quaternion.shape != (4,)
+                or not np.isfinite(position).all() or not np.isfinite(quaternion).all()
+                or not np.isfinite(distance) or distance <= 0):
+            raise ValueError("Invalid camera pose")
+        norm = np.linalg.norm(quaternion)
+        if not np.isfinite(norm) or norm == 0:
+            raise ValueError("Invalid camera rotation")
+        rotation = rotation_quaternion_to_matrix(quaternion[[3, 0, 1, 2]] / norm)
+        forward = rotation[:, 2]
+        target = position + distance * forward
+        camera_distance = distance / self._scale
+        limit = np.finfo(np.float32).max
+        if (distance > limit or np.any(np.abs(position) > limit) or np.any(np.abs(target) > limit)
+                or not np.finfo(np.float32).tiny <= camera_distance <= limit):
+            raise ValueError("Camera pose is outside the supported range")
+
+        self._view_basis[None] = np.column_stack((-forward, rotation[:, 0], rotation[:, 1]))
+        self._target[None] = target
+        self.camera_distance = camera_distance
+        self.set_camera_phi(0)
+        self.set_camera_theta(0)
 
     def move_camera(self, forward, right, up):
         """Translate the camera by distances in voxel units."""

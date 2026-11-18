@@ -401,6 +401,7 @@ class DisplayWindow():
             image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
             enable_mouse_rotating=True,
             resize=False,
+            context_menu=(),
         ):
         self.scene.update_light()  # Calculate light and shadow
 
@@ -413,7 +414,7 @@ class DisplayWindow():
         if windows:
             from ._tk_window import Window
 
-            gui = Window(title, self.resolution, resize=resize)
+            gui = Window(title, self.resolution, resize=resize, context_menu=context_menu)
         else:
             gui = ti.GUI(title, res=self.resolution)
         try:

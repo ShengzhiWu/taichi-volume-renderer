@@ -38,6 +38,7 @@ python -m examples.cxw_smoke "path/to/world.cxw" --camera saved --fly
 Omit `--camera saved` for an overview. Drag with the left mouse button to turn, use WASD to move, and press Q or E to change height. Shift speeds up movement, Tab switches between orbit and first-person controls, and R resets the view.
 
 On Windows, resizing the viewer updates the render resolution after the window size settles. The longer edge keeps a fixed field of view in both landscape and portrait.
+Right-click in the Windows viewer to copy the camera pose to the clipboard as JSON or restore a copied pose.
 
 The dense and sparse smoke renderers use the same compositing, default point light, and ray step factors. The sparse renderer uses a single scale for all axes to preserve the world's aspect ratio. Point lighting is enabled by default. The sparse renderer precomputes it at occupied voxel centers in its brick pool before displaying the first frame. Rendering then reads the cached light. Use `--no-lighting` for uniform illumination.
 
