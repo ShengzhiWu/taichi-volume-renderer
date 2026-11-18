@@ -52,14 +52,14 @@ class SparseSmokeScene(_OrbitScene):
     """Static sparse volume. Initialize Taichi before construction."""
 
     @classmethod
-    def from_cxw(cls, path, **options):
-        return cls(load_cxw(path), **options)
+    def from_cxw(cls, path, *, gamma=1.0, **options):
+        return cls(load_cxw(path), gamma=gamma, **options)
 
     def __init__(
         self, data, background=(0.2, 0.2, 0.2), camera="overview",
         density=0.22, step_length=1.0, light_step_length=3.0,
         lighting=True, point_lights_pos=None, point_lights_intensity=None,
-        materials=None, stop_threshold=0.01, max_steps=10000,
+        materials=None, stop_threshold=0.01, max_steps=10000, gamma=1.0,
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights."""
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
@@ -67,11 +67,21 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError(f"{name} must be finite and positive")
         if not np.isfinite(density) or density < 0:
             raise ValueError("density must be finite and nonnegative")
+        if not np.isfinite(gamma) or gamma <= 0:
+            raise ValueError("gamma must be finite and positive")
         if not 0 < stop_threshold < 1:
             raise ValueError("stop_threshold must be between 0 and 1")
         material_array = _packed_materials(density) if materials is None else np.asarray(materials, dtype=np.float32)
         if material_array.shape != (65536, 4) or not np.all(np.isfinite(material_array)) or np.any(material_array < 0):
             raise ValueError("materials must be a finite, nonnegative (65536, 4) RGB-density array")
+        if gamma != 1.0:
+            material_array = material_array.copy()
+            rgb = material_array[:, :3]
+            with np.errstate(over="raise", invalid="raise"):
+                try:
+                    np.power(rgb, gamma, out=rgb)
+                except FloatingPointError as exc:
+                    raise ValueError("gamma produced an out-of-range reflectance") from exc
         self._step = float(step_length)
         self._light_step = float(light_step_length)
         self._stop_threshold = float(stop_threshold)

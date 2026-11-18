@@ -359,14 +359,14 @@ class DisplayWindow():
 
     @classmethod
     def from_cxw(cls, path, resolution=(720, 720), init_taichi=True,
-                 taichi_arch=ti.gpu, **scene_options):
-        """Create an interactive smoke rendering window for a packed-color CXW scene."""
+                 taichi_arch=ti.gpu, *, gamma=1.0, **scene_options):
+        """Create a CXW smoke window with an optional RGB power-law exponent."""
         from .sparse_smoke import SparseSmokeScene
 
         if init_taichi:
             ti.init(arch=taichi_arch)
         window = cls.__new__(cls)
-        window.scene = SparseSmokeScene.from_cxw(path, **scene_options)
+        window.scene = SparseSmokeScene.from_cxw(path, gamma=gamma, **scene_options)
         window._init_display(resolution)
         return window
 

@@ -44,6 +44,8 @@ The dense and sparse smoke renderers use the same compositing, default point lig
 
 CXW air has zero density. Each occupied voxel uses its packed RGB color and a default density of 0.22 per voxel-width of ray travel along the longest axis. Change the density with `--density`. The default camera step is one voxel-width along that axis. Use `--step 0.5` for half steps. The light step is three voxel-widths along the longest axis.
 
+Use `--gamma` on the command line or `gamma=` in `DisplayWindow.from_cxw()` to raise each loaded RGB component to that power. The default is `1.0`. Values below 1 brighten midtone reflectance and values above 1 darken it.
+
 ```python
 from taichi_volume_renderer import DisplayWindow
 

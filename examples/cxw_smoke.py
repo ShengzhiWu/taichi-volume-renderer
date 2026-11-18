@@ -75,6 +75,8 @@ def main():
     parser.add_argument("--resolution", nargs=2, type=int, default=(720, 720),
                         metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--density", type=float, default=0.22, help="Density per occupied voxel")
+    parser.add_argument("--gamma", type=float, default=1.0,
+                        help="Apply x^gamma to each loaded RGB component (default: 1)")
     parser.add_argument("--step", type=float, default=1.0, help="Camera ray step in voxel units")
     lighting = parser.add_mutually_exclusive_group()
     lighting.add_argument("--lighting", dest="lighting", action="store_true", help="Enable point lighting (default)")
@@ -84,7 +86,8 @@ def main():
     args = parser.parse_args()
     window = CXWViewer.from_cxw(
         args.path, resolution=args.resolution, taichi_arch=getattr(ti, args.arch),
-        camera=args.camera, density=args.density, step_length=args.step, lighting=args.lighting,
+        camera=args.camera, density=args.density, gamma=args.gamma,
+        step_length=args.step, lighting=args.lighting,
     )
     window.show_controls(args.camera, args.fly)
 
