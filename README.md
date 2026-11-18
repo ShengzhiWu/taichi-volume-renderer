@@ -40,7 +40,9 @@ Omit `--camera saved` for an overview. Drag with the left mouse button to turn, 
 On Windows, resizing the viewer updates the render resolution after the window size settles. The longer edge keeps a fixed field of view in both landscape and portrait.
 Right-click in the Windows viewer to copy the camera pose to the clipboard as JSON or restore a copied pose.
 
-The dense and sparse smoke renderers use the same compositing, default point light, and ray step factors. The sparse renderer uses a single scale for all axes to preserve the world's aspect ratio. Point lighting is enabled by default. The sparse renderer precomputes it at occupied voxel centers in its brick pool before displaying the first frame. Rendering then reads the cached light. Use `--no-lighting` for uniform illumination.
+The dense and sparse smoke renderers use the same compositing and ray step factors. The sparse renderer uses a single scale for all axes to preserve the world's aspect ratio. It precomputes lighting at occupied voxel centers and reads the result from the brick pool during rendering.
+
+The CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting or `--no-lighting` for uniform illumination. The Python API defaults to point lighting and accepts `directional_light=((0, 1, 0), (8, 8, 8))` to switch. The direction points towards the source in the CXW world's Y-up coordinates.
 
 CXW air has zero density. Each occupied voxel uses its packed RGB color and a default density of 0.22 per voxel-width of ray travel along the longest axis. Change the density with `--density`. The default camera step is one voxel-width along that axis. Use `--step 0.5` for half steps. The light step is three voxel-widths along the longest axis.
 

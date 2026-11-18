@@ -60,8 +60,12 @@ class SparseSmokeScene(_OrbitScene):
         density=0.22, step_length=1.0, light_step_length=3.0,
         lighting=True, point_lights_pos=None, point_lights_intensity=None,
         materials=None, stop_threshold=0.01, max_steps=10000, gamma=1.0,
+        directional_light=None,
     ):
-        """Use voxel units for ray steps and the dense scene's units for point lights."""
+        """Use voxel units for ray steps and the dense scene's units for point lights.
+
+        A directional light is (direction towards the source in CXW world axes, RGB intensity).
+        """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
@@ -86,6 +90,7 @@ class SparseSmokeScene(_OrbitScene):
         self._light_step = float(light_step_length)
         self._stop_threshold = float(stop_threshold)
         self._lighting = bool(lighting)
+        self._directional = directional_light is not None
         if not isinstance(max_steps, (int, np.integer)) or not 0 < max_steps <= 2**31 - 1:
             raise ValueError("max_steps must be a positive 32-bit integer")
         self._max_steps = int(max_steps)
@@ -134,7 +139,22 @@ class SparseSmokeScene(_OrbitScene):
         self._world_extent[None] = extent
         self._world_center = ti.Vector.field(3, dtype=ti.f32, shape=())
         self._world_center[None] = self._center
-        if self._lighting:
+        if self._lighting and self._directional:
+            if point_lights_pos is not None or point_lights_intensity is not None:
+                raise ValueError("Specify a directional light or point lights")
+            direction, intensity = directional_light
+            direction = np.asarray(direction, dtype=np.float64)
+            intensity = np.asarray(intensity, dtype=np.float32)
+            length = np.linalg.norm(direction)
+            if (direction.shape != (3,) or not np.isfinite(length) or length == 0
+                    or intensity.shape != (3,) or not np.all(np.isfinite(intensity)) or np.any(intensity < 0)):
+                raise ValueError("Directional light needs a finite nonzero direction and nonnegative RGB intensity")
+            self._light_direction = ti.Vector.field(3, dtype=ti.f32, shape=())
+            self._light_direction[None] = direction / length
+            self._light_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+            self._light_color[None] = intensity
+            self._init_light_cache(data, intensity[None, :])
+        elif self._lighting:
             if point_lights_pos is None:
                 point_lights_pos = [[0, 0, 5]]
             positions = np.asarray(point_lights_pos, dtype=np.float32)
@@ -392,14 +412,18 @@ class SparseSmokeScene(_OrbitScene):
     def _sample_light(self, voxel_center):
         light = ti.Vector([1.0, 1.0, 1.0])
         if ti.static(self._lighting):
-            light = ti.Vector.zero(ti.f32, 3)
-            pos = (voxel_center - self._world_center[None]) / self._scale
-            for i in range(self._lights_pos.shape[0]):
-                offset = self._lights_pos[i] - pos
-                distance_squared = offset.dot(offset)
-                if distance_squared > 0.0:
-                    visibility = self._light_transmittance(voxel_center, offset.normalized())
-                    light += self._lights_intensity[i] * (visibility / distance_squared)
+            if ti.static(self._directional):
+                visibility = self._light_transmittance(voxel_center, self._light_direction[None])
+                light = self._light_color[None] * visibility
+            else:
+                light = ti.Vector.zero(ti.f32, 3)
+                pos = (voxel_center - self._world_center[None]) / self._scale
+                for i in range(self._lights_pos.shape[0]):
+                    offset = self._lights_pos[i] - pos
+                    distance_squared = offset.dot(offset)
+                    if distance_squared > 0.0:
+                        visibility = self._light_transmittance(voxel_center, offset.normalized())
+                        light += self._lights_intensity[i] * (visibility / distance_squared)
         return light
 
     @ti.func
