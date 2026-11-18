@@ -54,7 +54,7 @@ class CXWViewer(DisplayWindow):
         if forward or right or up:
             speed = 640.0 if gui.is_pressed(ti.GUI.SHIFT) else 120.0
             distance = speed * duration
-            self.scene.move_camera(forward * distance, right * distance, up * distance)
+            self.scene.move_camera(2.5 * forward * distance, right * distance, up * distance)
 
 
 def main():
