@@ -27,6 +27,27 @@ Volume rendering provides an impressive capability to display faintly visible ob
 
 ![lorenz-attractor](images/lorenz-attractor.jpg)
 
+### Sparse Smoke Rendering
+
+Open a packed-color CXW v7 or v8 world from a source checkout:
+
+```bash
+python -m examples.cxw_smoke "path/to/world.cxw" --camera saved --fly
+```
+
+Omit `--camera saved` for an overview. Drag with the left mouse button to turn, use WASD to move, and press Q or E to change height. Shift speeds up movement, Tab switches between orbit and first-person controls, and R resets the view.
+
+The renderer marches the camera ray through the volume and accumulates color and transmittance using the same compositing rule as the dense smoke renderer. Air has zero density. Each occupied voxel uses its packed RGB color and a default density of 0.22. Change the density with `--density` or the sample spacing in voxel units with `--step`. The default uses uniform lighting. `--lighting` enables point lights and computes volume shadows on demand with additional rays.
+
+```python
+from taichi_volume_renderer import DisplayWindow
+
+window = DisplayWindow.from_cxw("path/to/world.cxw", density=0.22, step_length=0.5)
+window.show()
+```
+
+The loader retains the occupied 8³ bricks in a compact pool. The ray marcher jumps over missing sectors and bricks while preserving the spacing of its samples. The renderer uses ordinary Taichi fields for the brick pool and indices, including on Vulkan. For custom packed brick data, `SparseSmokeScene` accepts a `(65536, 4)` RGB-density material table. Material code zero is reserved for air.
+
 ### High-Performance Real-Time Visualization
 
 The **taichi-volume-renderer** is built to work flawlessly with Taichi, enabling dynamic scene visualization. The following example solves a partial differential equation (PDE), specifically the Gray-Scott model, while visualizing the system's evolution in real-time. The script also saves an `.gif` animation. See `examples/pde.py`.

@@ -1,9 +1,92 @@
+import sys
+
 import numpy as np
 import taichi as ti
 
+from ._smoke import composite_sample
+
 __version__ = "1.6.0"
 
-class Scene():
+class _OrbitScene:
+    def __init__(self, background):
+        # Camera
+        self._fov = ti.field(dtype=ti.f32, shape=())
+        self._fov[None] = 0.5924  # 2 * tan(vertical field of view / 2)
+        self._camera_distance = ti.field(dtype=ti.f32, shape=())
+        self._camera_distance[None] = 3
+        self._camera_phi = ti.field(dtype=ti.f32, shape=())
+        self._camera_theta = ti.field(dtype=ti.f32, shape=())
+        self._background = ti.Vector.field(3, dtype=ti.f32, shape=())
+        self._background[None] = ti.Vector(background)
+
+    def _init_render(self):
+        @ti.kernel
+        def render(pixels: ti.template()):  # type: ignore
+            camera_pos = self._camera_distance[None] * ti.Vector([
+                ti.cos(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
+                ti.sin(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
+                ti.sin(self._camera_theta[None])
+            ])
+            camera_u_vector = ti.Vector([
+                -ti.sin(self._camera_phi[None]),
+                ti.cos(self._camera_phi[None]),
+                0
+            ])
+            camera_v_vector = ti.Vector([
+                -ti.cos(self._camera_phi[None]) * ti.sin(self._camera_theta[None]),
+                -ti.sin(self._camera_phi[None]) * ti.sin(self._camera_theta[None]),
+                ti.cos(self._camera_theta[None])
+            ])
+            camera_direction = -camera_pos / self._camera_distance[None]
+
+            for i, j in pixels:
+                pos = camera_pos
+                d = camera_direction + camera_u_vector * (self._fov[None] * (i - pixels.shape[0] / 2) / pixels.shape[1]) + camera_v_vector * (self._fov[None] * (j / pixels.shape[1] - 0.5))
+                d = d.normalized()
+
+                pixels[i, j] = self.ray_tracing(pos, d)
+        self.render = render
+
+    def get_vertical_field_of_view(self, degrees=True):  # Get vertical field of view. Default is 33°.
+        return np.arctan(self._fov[None] / 2) * 2 * (180 / np.pi if degrees else 1)
+
+    def set_vertical_field_of_view(self, angle, degrees=True):  # Set vertical field of view. Default is 33°.
+        self._fov[None] = 2 * np.tan(angle * (np.pi / 180 if degrees else 1) / 2)
+
+    def get_camera_phi(self, degrees=True):
+        return self._camera_phi[None] * (180 / np.pi if degrees else 1)
+
+    def set_camera_phi(self, angle, degrees=True):
+        self._camera_phi[None] = angle * (np.pi / 180 if degrees else 1)
+
+    def get_camera_theta(self, degrees=True):
+        return self._camera_theta[None] * (180 / np.pi if degrees else 1)
+
+    def set_camera_theta(self, angle, degrees=True):
+        self._camera_theta[None] = angle * (np.pi / 180 if degrees else 1)
+        if self._camera_theta[None] < np.pi * -0.5:
+            self._camera_theta[None] = np.pi * -0.5
+        if self._camera_theta[None] > np.pi * 0.5:
+            self._camera_theta[None] = np.pi * 0.5
+
+    @property
+    def camera_distance(self):
+        return self._camera_distance[None]
+
+    @camera_distance.setter
+    def camera_distance(self, value):
+        self._camera_distance[None] = value
+
+    @property
+    def background(self):
+        return list(self._background[None])
+
+    @background.setter
+    def background(self, value):
+        self._background[None] = ti.Vector(value)
+
+
+class Scene(_OrbitScene):
     def __init__(
         self,
         smoke_density_taichi,
@@ -30,15 +113,7 @@ class Scene():
         self.point_lights_pos = point_lights_pos_taichi
         self.point_lights_intensity = point_lights_intensity_taichi
     
-        # Camera
-        self._fov = ti.field(dtype=ti.f32, shape=())
-        self._fov[None] = 0.5924  # 2 * tan(vertical field of view / 2)
-        self._camera_distance = ti.field(dtype=ti.f32, shape=())
-        self._camera_distance[None] = 3
-        self._camera_phi = ti.field(dtype=ti.f32, shape=())
-        self._camera_theta = ti.field(dtype=ti.f32, shape=())
-        self._background = ti.Vector.field(3, dtype=ti.f32, shape=())
-        self._background[None] = ti.Vector(background)
+        super().__init__(background)
 
         # Ray tracing
         self._step_length = ti.field(dtype=ti.f32, shape=())
@@ -96,8 +171,11 @@ class Scene():
                 y_int = int(pos_maped.y)
                 z_int = int(pos_maped.z)
                 if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
-                    transmittance *= 1 - self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
-                    pixels_color += self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self.smoke_color[x_int, y_int, z_int] * self._step_length[None] * self.light_density[x_int, y_int, z_int] * transmittance
+                    opacity = self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
+                    pixels_color, transmittance = composite_sample(
+                        pixels_color, transmittance, self.smoke_color[x_int, y_int, z_int],
+                        self.light_density[x_int, y_int, z_int], opacity,
+                    )
                 pos += d * self._step_length[None]
                 return pos, d, pixels_color, transmittance, False
             self.ray_tracing_one_step = ray_tracing_one_step
@@ -110,8 +188,11 @@ class Scene():
                 z_int = int(pos_maped.z)
                 to_break = False
                 if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
-                    transmittance *= 1 - self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
-                    pixels_color += self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self.smoke_color[x_int, y_int, z_int] * self._step_length[None] * self.light_density[x_int, y_int, z_int] * transmittance
+                    opacity = self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
+                    pixels_color, transmittance = composite_sample(
+                        pixels_color, transmittance, self.smoke_color[x_int, y_int, z_int],
+                        self.light_density[x_int, y_int, z_int], opacity,
+                    )
 
                     if x_int >= 1 and x_int < self.smoke_density.shape[0] - 1 and y_int >= 1 and y_int < self.smoke_density.shape[1] - 1 and z_int >= 1 and z_int < self.smoke_density.shape[2] - 1:
                         index_of_refraction = self.index_of_refraction[x_int, y_int, z_int]
@@ -166,33 +247,8 @@ class Scene():
             return pixels_color
         self.ray_tracing = ray_tracing
 
-        @ti.kernel
-        def render(pixels: ti.template()):  # type: ignore
-            camera_pos = self._camera_distance[None] * ti.Vector([
-                ti.cos(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
-                ti.sin(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
-                ti.sin(self._camera_theta[None])
-            ])
-            camera_u_vector = ti.Vector([
-                -ti.sin(self._camera_phi[None]),
-                ti.cos(self._camera_phi[None]),
-                0
-            ])
-            camera_v_vector = ti.Vector([
-                -ti.cos(self._camera_phi[None]) * ti.sin(self._camera_theta[None]),
-                -ti.sin(self._camera_phi[None]) * ti.sin(self._camera_theta[None]),
-                ti.cos(self._camera_theta[None])
-            ])
-            camera_direction = -camera_pos / self._camera_distance[None]
+        self._init_render()
 
-            for i, j in pixels:
-                pos = camera_pos
-                d = camera_direction + camera_u_vector * (self._fov[None] * (i - pixels.shape[0] / 2) / pixels.shape[1]) + camera_v_vector * (self._fov[None] * (j / pixels.shape[1] - 0.5))
-                d = d.normalized()
-                
-                pixels[i, j] = self.ray_tracing(pos, d)
-        self.render = render
-    
     @property
     def smoke_density_factor(self):
         return self._smoke_density_factor[None]
@@ -201,44 +257,6 @@ class Scene():
     def smoke_density_factor(self, value):
         self._smoke_density_factor[None] = value
 
-    def get_vertical_field_of_view(self, degrees=True):  # Get vertical field of view. Default is 33°.
-        return np.atan(self._fov[None] / 2) * 2 * (180 / np.pi if degrees else 1)
-
-    def set_vertical_field_of_view(self, angle, degrees=True):  # Set vertical field of view. Default is 33°.
-        self._fov[None] = 2 * np.tan(angle * (np.pi / 180 if degrees else 1) / 2)
-
-    def get_camera_phi(self, degrees=True):
-        return self._camera_phi[None] * (180 / np.pi if degrees else 1)
-
-    def set_camera_phi(self, angle, degrees=True):
-        self._camera_phi[None] = angle * (np.pi / 180 if degrees else 1)
-
-    def get_camera_theta(self, degrees=True):
-        return self._camera_theta[None] * (180 / np.pi if degrees else 1)
-
-    def set_camera_theta(self, angle, degrees=True):
-        self._camera_theta[None] = angle * (np.pi / 180 if degrees else 1)
-        if self._camera_theta[None] < np.pi * -0.5:
-            self._camera_theta[None] = np.pi * -0.5
-        if self._camera_theta[None] > np.pi * 0.5:
-            self._camera_theta[None] = np.pi * 0.5
-    
-    @property
-    def camera_distance(self):
-        return self._camera_distance[None]
-
-    @camera_distance.setter
-    def camera_distance(self, value):
-        self._camera_distance[None] = value
-    
-    @property
-    def background(self):
-        return list(self._background[None])
-
-    @background.setter
-    def background(self, value):
-        self._background[None] = ti.Vector(value)
-    
     @property
     def step_length(self):
         return self._step_length[None]
@@ -331,7 +349,22 @@ class DisplayWindow():
             light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
             ray_tracing_max_steps=ray_tracing_max_steps)
 
-        # Window
+        self._init_display(resolution)
+
+    @classmethod
+    def from_cxw(cls, path, resolution=(720, 720), init_taichi=True,
+                 taichi_arch=ti.gpu, **scene_options):
+        """Create an interactive smoke rendering window for a packed-color CXW scene."""
+        from .sparse_smoke import SparseSmokeScene
+
+        if init_taichi:
+            ti.init(arch=taichi_arch)
+        window = cls.__new__(cls)
+        window.scene = SparseSmokeScene.from_cxw(path, **scene_options)
+        window._init_display(resolution)
+        return window
+
+    def _init_display(self, resolution):
         self.resolution = tuple(resolution)
         self.pixels = ti.Vector.field(3, dtype=ti.f32, shape=resolution)
 
@@ -350,6 +383,9 @@ class DisplayWindow():
 
     def mouse_wheel_event(self, delta):
         self.scene.camera_distance *= (1 - self.camera_zooming_speed) ** delta[1]
+
+    def _handle_keyboard(self, gui):
+        pass
     
     def show(
             self,
@@ -361,16 +397,32 @@ class DisplayWindow():
         ):
         self.scene.update_light()  # Calculate light and shadow
 
-        gui = ti.GUI(title, res=self.resolution)
+        windows = sys.platform == "win32"
+        if windows:
+            from ._tk_window import Window
+
+            gui = Window(title, self.resolution)
+        else:
+            gui = ti.GUI(title, res=self.resolution)
+        try:
+            self._show_loop(gui, windows, update_light_each_step, callback,
+                            image_process, enable_mouse_rotating)
+        finally:
+            if windows:
+                gui.close()
+
+    def _show_loop(self, gui, windows, update_light_each_step, callback,
+                   image_process, enable_mouse_rotating):
         iteration = 0
         while gui.running:
-            if update_light_each_step:
-                self.scene.update_light()
-            self.scene.render(self.pixels)
-            if not image_process is None:
-                image_process(iteration, self.pixels)
-            gui.set_image(self.pixels)
-            gui.show()
+            if windows:
+                gui.poll_events()
+                if not gui.running:
+                    break
+
+            for event in gui.get_events(ti.GUI.WHEEL):
+                if enable_mouse_rotating:
+                    self.mouse_wheel_event(event.delta)
 
             # Manage mouse events
             if enable_mouse_rotating:
@@ -385,8 +437,17 @@ class DisplayWindow():
                         self.cursor_start_pos = cursor_pos
                 else:
                     self.mouse_pressed = False
-                for event in gui.get_events(ti.GUI.WHEEL):
-                    self.mouse_wheel_event(event.delta)
+
+            self._handle_keyboard(gui)
+            if not gui.running:
+                break
+            if update_light_each_step:
+                self.scene.update_light()
+            self.scene.render(self.pixels)
+            if image_process is not None:
+                image_process(iteration, self.pixels)
+            gui.set_image(self.pixels)
+            gui.show()
 
             if not callback is None:
                 callback(iteration, self.scene)
