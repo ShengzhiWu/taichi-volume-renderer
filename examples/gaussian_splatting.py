@@ -7,7 +7,7 @@ from taichi_volume_renderer.io import parse_gaussian_splatting_data
 
 ti.init(arch=ti.gpu)
 
-file_path = "D:/Gaussian_spot_test/your_gaussian_splatting_data_file.ply"
+file_path = "D:/Gaussian_spot_test/环阁_简化.ply"
 ply_data = PlyData.read(file_path)
 data = parse_gaussian_splatting_data(ply_data)
 
