@@ -15,7 +15,8 @@ class CXWViewer(DisplayWindow):
         self._tab_pressed = False
         self._reset_pressed = False
         self._last_frame = perf_counter()
-        self.show(title="Sparse smoke | Drag to look | WASD move | Q/E height | Tab orbit/fly | R reset")
+        self.show(title="Sparse smoke | Drag to look | WASD move | Q/E height | Tab orbit/fly | R reset",
+                  resize=True)
 
     def mouse_drag_event(self, pos, pos_delta):
         if self.fly:

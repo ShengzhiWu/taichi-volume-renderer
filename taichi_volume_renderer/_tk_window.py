@@ -11,7 +11,7 @@ class Window:
 
     _KEYS = {"Escape": ti.GUI.ESCAPE, "Tab": ti.GUI.TAB, "ISO_Left_Tab": ti.GUI.TAB}
 
-    def __init__(self, title, resolution):
+    def __init__(self, title, resolution, resize=False):
         self._root = tk.Tk()
         self._root.title(title)
         self._title = title
@@ -19,7 +19,15 @@ class Window:
         self._header = f"P6\n{width} {height}\n255\n".encode("ascii")
         self._image = tk.PhotoImage(width=width, height=height, master=self._root)
         self._view = tk.Label(self._root, image=self._image, borderwidth=0, highlightthickness=0)
-        self._view.pack(expand=True)
+        self._size = tuple(resolution)
+        self._window_size = self._size
+        self._resize_deadline = 0.0
+        if resize:
+            self._root.geometry(f"{width}x{height}")
+            self._view.place(relx=0.5, rely=0.5, anchor="center")
+            self._root.bind("<Configure>", self._configure)
+        else:
+            self._view.pack(expand=True)
         self._root.configure(background="black")
         self._root.protocol("WM_DELETE_WINDOW", self._stop)
         self._root.bind("<KeyPress>", self._key_press)
@@ -34,7 +42,6 @@ class Window:
         self._keys = set()
         self._cursor = (0.0, 0.0)
         self._wheel = []
-        self._size = resolution
         self._frame_start = self._fps_start = perf_counter()
         self._frames = 0
 
@@ -71,6 +78,17 @@ class Window:
         self._frame_start = perf_counter()
         self._root.update()
 
+    def _configure(self, event):
+        size = (event.width, event.height)
+        if event.widget == self._root and min(size) > 1 and size != self._window_size:
+            self._window_size = size
+            self._resize_deadline = perf_counter() + 0.15
+
+    def take_resize(self):
+        if self._window_size != self._size and perf_counter() >= self._resize_deadline:
+            return self._window_size
+        return None
+
     def get_events(self, key):
         if key == ti.GUI.WHEEL:
             events, self._wheel = self._wheel, []
@@ -85,6 +103,12 @@ class Window:
         return self._cursor
 
     def set_image(self, pixels):
+        size = tuple(pixels.shape)
+        if size != self._size:
+            self._size = size
+            width, height = size
+            self._header = f"P6\n{width} {height}\n255\n".encode("ascii")
+            self._image.configure(width=width, height=height)
         rgb = pixels.to_numpy().transpose(1, 0, 2)[::-1]
         np.clip(rgb, 0.0, 1.0, out=rgb)
         rgb *= 255.0

@@ -19,9 +19,9 @@ class _OrbitScene:
         self._background = ti.Vector.field(3, dtype=ti.f32, shape=())
         self._background[None] = ti.Vector(background)
 
-    def _init_render(self):
+    def _make_render(self, pixel_type=ti.template(), long_edge_fov=False):
         @ti.kernel
-        def render(pixels: ti.template()):  # type: ignore
+        def render(pixels: pixel_type):
             camera_pos = self._camera_distance[None] * ti.Vector([
                 ti.cos(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
                 ti.sin(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
@@ -39,13 +39,19 @@ class _OrbitScene:
             ])
             camera_direction = -camera_pos / self._camera_distance[None]
 
-            for i, j in pixels:
+            width, height = pixels.shape[0], pixels.shape[1]
+            fov_edge = height
+            if ti.static(long_edge_fov):
+                fov_edge = ti.max(width, height)
+            pixel_angle = self._fov[None] / fov_edge
+            for i, j in ti.ndrange(width, height):
                 pos = camera_pos
-                d = camera_direction + camera_u_vector * (self._fov[None] * (i - pixels.shape[0] / 2) / pixels.shape[1]) + camera_v_vector * (self._fov[None] * (j / pixels.shape[1] - 0.5))
+                d = (camera_direction + camera_u_vector * (pixel_angle * (i - width / 2))
+                     + camera_v_vector * (pixel_angle * (j - height / 2)))
                 d = d.normalized()
 
                 pixels[i, j] = self.ray_tracing(pos, d)
-        self.render = render
+        return render
 
     def get_vertical_field_of_view(self, degrees=True):  # Get vertical field of view. Default is 33°.
         return np.arctan(self._fov[None] / 2) * 2 * (180 / np.pi if degrees else 1)
@@ -247,7 +253,7 @@ class Scene(_OrbitScene):
             return pixels_color
         self.ray_tracing = ray_tracing
 
-        self._init_render()
+        self.render = self._make_render()
 
     @property
     def smoke_density_factor(self):
@@ -393,25 +399,31 @@ class DisplayWindow():
             update_light_each_step=False,
             callback=None,  # Users can update smoke density, rotate camera etc. each step by assigning this callback function.
             image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
-            enable_mouse_rotating=True
+            enable_mouse_rotating=True,
+            resize=False,
         ):
         self.scene.update_light()  # Calculate light and shadow
 
         windows = sys.platform == "win32"
+        resize = windows and resize
+        render = self.scene.render
+        if resize:
+            render = self.scene._make_render(ti.types.ndarray(dtype=ti.math.vec3, ndim=2), long_edge_fov=True)
+            self.pixels = ti.Vector.ndarray(3, dtype=ti.f32, shape=self.resolution)
         if windows:
             from ._tk_window import Window
 
-            gui = Window(title, self.resolution)
+            gui = Window(title, self.resolution, resize=resize)
         else:
             gui = ti.GUI(title, res=self.resolution)
         try:
-            self._show_loop(gui, windows, update_light_each_step, callback,
+            self._show_loop(gui, windows, resize, render, update_light_each_step, callback,
                             image_process, enable_mouse_rotating)
         finally:
             if windows:
                 gui.close()
 
-    def _show_loop(self, gui, windows, update_light_each_step, callback,
+    def _show_loop(self, gui, windows, resize, render, update_light_each_step, callback,
                    image_process, enable_mouse_rotating):
         iteration = 0
         while gui.running:
@@ -419,6 +431,12 @@ class DisplayWindow():
                 gui.poll_events()
                 if not gui.running:
                     break
+                if resize:
+                    resolution = gui.take_resize()
+                    if resolution is not None and resolution != self.resolution:
+                        self.pixels = ti.Vector.ndarray(3, dtype=ti.f32, shape=resolution)
+                        self.resolution = resolution
+                        self.mouse_pressed = False
 
             for event in gui.get_events(ti.GUI.WHEEL):
                 if enable_mouse_rotating:
@@ -443,7 +461,7 @@ class DisplayWindow():
                 break
             if update_light_each_step:
                 self.scene.update_light()
-            self.scene.render(self.pixels)
+            render(self.pixels)
             if image_process is not None:
                 image_process(iteration, self.pixels)
             gui.set_image(self.pixels)
