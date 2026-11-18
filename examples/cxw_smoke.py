@@ -61,11 +61,14 @@ def main():
     parser.add_argument("path", help="Path to a packed-color CXW v7/v8 file")
     parser.add_argument("--camera", choices=("overview", "saved"), default="overview")
     parser.add_argument("--arch", choices=("gpu", "cuda", "vulkan", "cpu"), default="gpu")
-    parser.add_argument("--resolution", nargs=2, type=int, default=(960, 720),
+    parser.add_argument("--resolution", nargs=2, type=int, default=(720, 720),
                         metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--density", type=float, default=0.22, help="Density per occupied voxel")
-    parser.add_argument("--step", type=float, default=0.5, help="Camera ray step in voxel units")
-    parser.add_argument("--lighting", action="store_true", help="Enable point lighting with volume shadows")
+    parser.add_argument("--step", type=float, default=1.0, help="Camera ray step in voxel units")
+    lighting = parser.add_mutually_exclusive_group()
+    lighting.add_argument("--lighting", dest="lighting", action="store_true", help="Enable point lighting (default)")
+    lighting.add_argument("--no-lighting", dest="lighting", action="store_false", help="Use uniform lighting")
+    parser.set_defaults(lighting=True)
     parser.add_argument("--fly", action="store_true", help="Start with first-person mouse controls")
     args = parser.parse_args()
     window = CXWViewer.from_cxw(

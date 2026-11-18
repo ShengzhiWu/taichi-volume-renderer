@@ -37,12 +37,14 @@ python -m examples.cxw_smoke "path/to/world.cxw" --camera saved --fly
 
 Omit `--camera saved` for an overview. Drag with the left mouse button to turn, use WASD to move, and press Q or E to change height. Shift speeds up movement, Tab switches between orbit and first-person controls, and R resets the view.
 
-The renderer marches the camera ray through the volume and accumulates color and transmittance using the same compositing rule as the dense smoke renderer. Air has zero density. Each occupied voxel uses its packed RGB color and a default density of 0.22. Change the density with `--density` or the sample spacing in voxel units with `--step`. The default uses uniform lighting. `--lighting` enables point lights and computes volume shadows on demand with additional rays.
+The dense and sparse smoke renderers use the same compositing, default point light, and ray step factors. The sparse renderer uses a single scale for all axes to preserve the world's aspect ratio. Point lighting is enabled by default. The sparse renderer precomputes it at occupied voxel centers in its brick pool before displaying the first frame. Rendering then reads the cached light. Use `--no-lighting` for uniform illumination.
+
+CXW air has zero density. Each occupied voxel uses its packed RGB color and a default density of 0.22 per voxel-width of ray travel along the longest axis. Change the density with `--density`. The default camera step is one voxel-width along that axis. Use `--step 0.5` for half steps. The light step is three voxel-widths along the longest axis.
 
 ```python
 from taichi_volume_renderer import DisplayWindow
 
-window = DisplayWindow.from_cxw("path/to/world.cxw", density=0.22, step_length=0.5)
+window = DisplayWindow.from_cxw("path/to/world.cxw", density=0.22)
 window.show()
 ```
 
