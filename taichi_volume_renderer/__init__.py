@@ -358,7 +358,7 @@ class DisplayWindow():
         self._init_display(resolution)
 
     @classmethod
-    def from_cxw(cls, path, resolution=(720, 720), init_taichi=True,
+    def from_cxw(cls, path, resolution=(1280, 720), init_taichi=True,
                  taichi_arch=ti.gpu, *, gamma=1.0, **scene_options):
         """Create a CXW smoke window with an optional RGB power-law exponent."""
         from .sparse_smoke import SparseSmokeScene

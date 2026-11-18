@@ -72,7 +72,7 @@ def main():
     parser.add_argument("path", help="Path to a packed-color CXW v7/v8 file")
     parser.add_argument("--camera", choices=("overview", "saved"), default="overview")
     parser.add_argument("--arch", choices=("gpu", "cuda", "vulkan", "cpu"), default="gpu")
-    parser.add_argument("--resolution", nargs=2, type=int, default=(720, 720),
+    parser.add_argument("--resolution", nargs=2, type=int, default=(1280, 720),
                         metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--density", type=float, default=0.22, help="Density per occupied voxel")
     parser.add_argument("--gamma", type=float, default=1.0,
