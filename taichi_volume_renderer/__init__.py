@@ -5,7 +5,7 @@ from time import perf_counter
 import numpy as np
 import taichi as ti
 
-from ._smoke import apply_rgb_gamma, composite_sample, validate_gamma
+from ._smoke import apply_rgb_gamma, composite_sample, directional_light_parameters, validate_gamma
 from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 
 __version__ = "1.6.0"
@@ -176,8 +176,8 @@ class Scene(_OrbitScene):
         self,
         smoke_density_taichi,
         smoke_color_taichi,
-        point_lights_pos_taichi,
-        point_lights_intensity_taichi,
+        point_lights_pos_taichi=None,
+        point_lights_intensity_taichi=None,
         lighting=True,
         index_of_refraction_taichi=None,
         ray_tracing_stop_threshold=0.01,  # 0 ~ 1
@@ -186,9 +186,28 @@ class Scene(_OrbitScene):
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
         ray_tracing_max_steps=10000,
-        *, gamma=1.0,
+        *, gamma=1.0, directional_light=None,
     ):
         validate_gamma(gamma)
+        if directional_light is not None:
+            if point_lights_pos_taichi is not None or point_lights_intensity_taichi is not None:
+                raise ValueError("Specify a directional light or point lights")
+            light_direction, light_intensity = map(tuple, directional_light_parameters(directional_light))
+
+        if directional_light is None:
+            if point_lights_pos_taichi is None:
+                point_lights_pos_taichi = np.array([[0, 0, 5]], dtype=float)
+            if not isinstance(point_lights_pos_taichi, ti.Field):
+                point_lights_pos_taichi_numpy = point_lights_pos_taichi
+                point_lights_pos_taichi = ti.Vector.field(3, dtype=ti.f32, shape=point_lights_pos_taichi_numpy.shape[:-1])
+                point_lights_pos_taichi.from_numpy(point_lights_pos_taichi_numpy)
+
+            if point_lights_intensity_taichi is None:
+                point_lights_intensity_taichi = np.array([[50, 50, 50]], dtype=float)
+            if not isinstance(point_lights_intensity_taichi, ti.Field):
+                point_lights_intensity_taichi_numpy = point_lights_intensity_taichi
+                point_lights_intensity_taichi = ti.Vector.field(3, dtype=ti.f32, shape=point_lights_intensity_taichi_numpy.shape[:-1])
+                point_lights_intensity_taichi.from_numpy(point_lights_intensity_taichi_numpy)
 
         # Volume data
         self.smoke_density = smoke_density_taichi  # Smoke density
@@ -226,29 +245,33 @@ class Scene(_OrbitScene):
         self.light_density.from_numpy(np.ones(list(smoke_density_taichi.shape) + [3]))
 
         if lighting:
+            @ti.func
+            def light_transmittance(pos, direction):
+                transmittance = 1.0
+                while not past_volume(pos, direction):
+                    mapped = (pos + ti.Vector(half_extent)) * grid_size
+                    voxel = ti.cast(mapped, ti.i32)
+                    if (voxel >= 0).all() and (voxel < ti.Vector(grid_shape)).all():
+                        transmittance *= (1 - self._smoke_density_factor[None] * self.smoke_density[voxel]
+                                          * self._step_length_light[None])
+                    pos += direction * self._step_length_light[None]
+                return transmittance
+
             @ti.kernel
-            def update_light():  # Update shadow.
+            def update_light():
                 for i, j, k in self.light_density:
-                    self.light_density[i, j, k] = ti.Vector([0., 0., 0.])
-                    pos = ti.Vector([i + 0.5, j + 0.5, k + 0.5]) * pixel_size - ti.Vector(half_extent)
-                    for l in ti.ndrange(self.point_lights_pos.shape[0]):
-                        d = self.point_lights_pos[l] - pos
-                        distance_squared = ti.math.dot(d, d)
-                        transmittance = 1.
-                        d = d.normalized()
-                        pos_2 = pos
-                        # pos_2 += d * (pixel_size * 0.5)
-                        while True:
-                            if past_volume(pos_2, d):
-                                break
-                            pos_maped = (pos_2 + ti.Vector(half_extent)) * grid_size
-                            x_int = int(pos_maped.x)
-                            y_int = int(pos_maped.y)
-                            z_int = int(pos_maped.z)
-                            if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
-                                transmittance *= 1 - self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length_light[None]
-                            pos_2 += d * self._step_length_light[None]
-                        self.light_density[i, j, k] += self.point_lights_intensity[l] * (transmittance / distance_squared)
+                    pos = (ti.Vector([i, j, k]) + 0.5) * pixel_size - ti.Vector(half_extent)
+                    light = ti.Vector([0., 0., 0.])
+                    if ti.static(directional_light is not None):
+                        light = ti.Vector(light_intensity) * light_transmittance(pos, ti.Vector(light_direction))
+                    else:
+                        for index in range(self.point_lights_pos.shape[0]):
+                            offset = self.point_lights_pos[index] - pos
+                            distance_squared = offset.dot(offset)
+                            if distance_squared > 0.0:
+                                transmittance = light_transmittance(pos, offset.normalized())
+                                light += self.point_lights_intensity[index] * (transmittance / distance_squared)
+                    self.light_density[i, j, k] = light
             self.update_light = update_light
         else:
             @ti.kernel
@@ -402,7 +425,7 @@ class DisplayWindow():
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
         ray_tracing_max_steps=10000,
-        *, gamma=1.0,
+        *, gamma=1.0, directional_light=None,
     ):
         if init_taichi:
             ti.init(arch=taichi_arch)
@@ -426,20 +449,6 @@ class DisplayWindow():
                 index_of_refraction = ti.field(dtype=ti.f32, shape=index_of_refraction_numpy.shape)
                 index_of_refraction.from_numpy(index_of_refraction_numpy)
 
-        if point_lights_pos is None:
-            point_lights_pos = np.array([[0, 0, 5]], dtype=float)
-        if not isinstance(point_lights_pos, ti.Field):
-            point_lights_pos_numpy = point_lights_pos
-            point_lights_pos = ti.Vector.field(3, dtype=ti.f32, shape=point_lights_pos_numpy.shape[:-1])
-            point_lights_pos.from_numpy(point_lights_pos_numpy)
-
-        if point_lights_intensity is None:
-            point_lights_intensity = np.array([[50, 50, 50]], dtype=float)
-        if not isinstance(point_lights_intensity, ti.Field):
-            point_lights_intensity_numpy = point_lights_intensity
-            point_lights_intensity = ti.Vector.field(3, dtype=ti.f32, shape=point_lights_intensity_numpy.shape[:-1])
-            point_lights_intensity.from_numpy(point_lights_intensity_numpy)
-
         self.scene = Scene(
             smoke_density_taichi=smoke_density,
             smoke_color_taichi=smoke_color,
@@ -453,7 +462,7 @@ class DisplayWindow():
             ray_tracing_step_size_factor=ray_tracing_step_size_factor,
             light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
             ray_tracing_max_steps=ray_tracing_max_steps,
-            gamma=gamma)
+            gamma=gamma, directional_light=directional_light)
 
         self._init_display(resolution)
 
@@ -645,7 +654,7 @@ def plot_volume(
     callback=None,  # Users can update smoke density, rotate camera etc. each step by assigning this callback function.
     image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
     enable_mouse_rotating=True,
-    *, gamma=1.0,
+    *, gamma=1.0, directional_light=None,
 ):
     window = DisplayWindow(
         smoke_density=smoke_density,
@@ -663,7 +672,7 @@ def plot_volume(
         ray_tracing_step_size_factor=ray_tracing_step_size_factor,
         light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
         ray_tracing_max_steps=ray_tracing_max_steps,
-        gamma=gamma,
+        gamma=gamma, directional_light=directional_light,
     )
     window.scene.set_camera_phi(camera_phi)
     window.scene.set_camera_theta(camera_theta)

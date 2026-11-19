@@ -5,7 +5,7 @@ import taichi as ti
 
 from . import _OrbitScene
 from .cxw import load_cxw
-from ._smoke import apply_rgb_gamma, composite_sample, validate_gamma
+from ._smoke import apply_rgb_gamma, composite_sample, directional_light_parameters, validate_gamma
 
 
 @ti.func
@@ -140,15 +140,9 @@ class SparseSmokeScene(_OrbitScene):
         if self._lighting and self._directional:
             if point_lights_pos is not None or point_lights_intensity is not None:
                 raise ValueError("Specify a directional light or point lights")
-            direction, intensity = directional_light
-            direction = np.asarray(direction, dtype=np.float64)
-            intensity = np.asarray(intensity, dtype=np.float32)
-            length = np.linalg.norm(direction)
-            if (direction.shape != (3,) or not np.isfinite(length) or length == 0
-                    or intensity.shape != (3,) or not np.all(np.isfinite(intensity)) or np.any(intensity < 0)):
-                raise ValueError("Directional light needs a finite nonzero direction and nonnegative RGB intensity")
+            direction, intensity = directional_light_parameters(directional_light)
             self._light_direction = ti.Vector.field(3, dtype=ti.f32, shape=())
-            self._light_direction[None] = direction / length
+            self._light_direction[None] = direction
             self._light_color = ti.Vector.field(3, dtype=ti.f32, shape=())
             self._light_color[None] = intensity
             self._init_light_cache(data, np.vstack((ambient, intensity)))

@@ -22,6 +22,17 @@ def apply_rgb_gamma(rgb, gamma):
     return result
 
 
+def directional_light_parameters(light):
+    direction, intensity = light
+    direction = np.asarray(direction, dtype=np.float64)
+    intensity = np.asarray(intensity, dtype=np.float32)
+    length = np.linalg.norm(direction)
+    if (direction.shape != (3,) or not np.isfinite(length) or length == 0
+            or intensity.shape != (3,) or not np.all(np.isfinite(intensity)) or np.any(intensity < 0)):
+        raise ValueError("Directional light needs a finite nonzero direction and nonnegative RGB intensity")
+    return (direction / length).astype(np.float32), intensity
+
+
 @ti.func
 def composite_sample(color, transmittance, sample_color, light, opacity):
     transmittance *= 1.0 - opacity
