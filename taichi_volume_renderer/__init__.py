@@ -123,7 +123,15 @@ class Scene(_OrbitScene):
 
         # Ray tracing
         self._step_length = ti.field(dtype=ti.f32, shape=())
-        pixel_size = 1 / np.max(smoke_density_taichi.shape)
+        grid_shape = smoke_density_taichi.shape
+        grid_size = max(grid_shape)
+        pixel_size = 1 / grid_size
+        half_extent = tuple(n * pixel_size / 2 for n in grid_shape)
+
+        @ti.func
+        def past_volume(pos, direction):
+            half = ti.Vector(half_extent)
+            return ((pos > half) & (direction > 0)).any() or ((pos < -half) & (direction < 0)).any()
         self._step_length[None] = pixel_size * ray_tracing_step_size_factor
         self._step_length_light = ti.field(dtype=ti.f32, shape=())
         self._step_length_light[None] = pixel_size * light_ray_tracing_step_size_factor
@@ -139,7 +147,7 @@ class Scene(_OrbitScene):
             def update_light():  # Update shadow.
                 for i, j, k in self.light_density:
                     self.light_density[i, j, k] = ti.Vector([0., 0., 0.])
-                    pos = ti.Vector([i + 0.5, j + 0.5, k + 0.5]) / self.smoke_density.shape - 0.5
+                    pos = ti.Vector([i + 0.5, j + 0.5, k + 0.5]) * pixel_size - ti.Vector(half_extent)
                     for l in ti.ndrange(self.point_lights_pos.shape[0]):
                         d = self.point_lights_pos[l] - pos
                         distance_squared = ti.math.dot(d, d)
@@ -148,13 +156,9 @@ class Scene(_OrbitScene):
                         pos_2 = pos
                         # pos_2 += d * (pixel_size * 0.5)
                         while True:
-                            if pos_2.x > 0.5 and d.x > 0 or pos_2.x < -0.5 and d.x < 0:
+                            if past_volume(pos_2, d):
                                 break
-                            if pos_2.y > 0.5 and d.y > 0 or pos_2.y < -0.5 and d.y < 0:
-                                break
-                            if pos_2.z > 0.5 and d.z > 0 or pos_2.z < -0.5 and d.z < 0:
-                                break
-                            pos_maped = (pos_2 + 0.5) * self.smoke_density.shape
+                            pos_maped = (pos_2 + ti.Vector(half_extent)) * grid_size
                             x_int = int(pos_maped.x)
                             y_int = int(pos_maped.y)
                             z_int = int(pos_maped.z)
@@ -172,7 +176,7 @@ class Scene(_OrbitScene):
         if self.index_of_refraction is None:
             @ti.func
             def ray_tracing_one_step(pos, d, pixels_color, transmittance):
-                pos_maped = (pos + 0.5) * self.smoke_density.shape
+                pos_maped = (pos + ti.Vector(half_extent)) * grid_size
                 x_int = int(pos_maped.x)
                 y_int = int(pos_maped.y)
                 z_int = int(pos_maped.z)
@@ -188,7 +192,7 @@ class Scene(_OrbitScene):
         else:
             @ti.func
             def ray_tracing_one_step(pos, d, pixels_color, transmittance):
-                pos_maped = (pos + 0.5) * self.smoke_density.shape
+                pos_maped = (pos + ti.Vector(half_extent)) * grid_size
                 x_int = int(pos_maped.x)
                 y_int = int(pos_maped.y)
                 z_int = int(pos_maped.z)
@@ -238,7 +242,7 @@ class Scene(_OrbitScene):
                 pos += d * distance_to_sphere
             i = ray_tracing_max_steps
             while i > 0:
-                if (pos.x > 0.5 and d.x > 0 or pos.x < -0.5 and d.x < 0) or (pos.y > 0.5 and d.y > 0 or pos.y < -0.5 and d.y < 0) or (pos.z > 0.5 and d.z > 0 or pos.z < -0.5 and d.z < 0):
+                if past_volume(pos, d):
                     break
                 if transmittance < self._stop_threshold[None]:
                     break
