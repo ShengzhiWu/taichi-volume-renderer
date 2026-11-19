@@ -134,9 +134,7 @@ The window backend affects how quickly the app responds to keyboard and mouse in
 - Default lights
 - Background images
 - Ray intersection with the scene
-- Supports volumetric data with non-cuboid shapes
 - More features of canvas
 - Reflection
 - Anisotropic volume based on spherical harmonics
 - Secondary scattering
-- Sparse grid
