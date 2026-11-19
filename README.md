@@ -46,6 +46,8 @@ Omit `--camera saved` for an overview. Drag with the left mouse button to turn, 
 On Windows, resizing the viewer updates the render resolution after the window size settles. The longer edge keeps a fixed field of view in both landscape and portrait.
 Right-click in the Windows viewer to copy the camera pose to the clipboard as JSON or restore a copied pose.
 
+The CXW command-line viewer defaults to Vulkan and GGUI, displaying frames as GPU textures without CPU readback. Use `--no-ggui` to select the standard window, which is Tk on Windows. Choosing a non-Vulkan compute backend also selects the standard window unless GGUI is explicitly requested. In Python, initialize Taichi with `ti.vulkan` and pass `ggui=True` to `DisplayWindow.show()`. GGUI supports keyboard navigation, mouse drag, and adaptive resolution. The Tk viewer provides the wheel and camera clipboard menu.
+
 The dense and sparse smoke renderers use the same compositing and ray step factors. The sparse renderer uses a single scale for all axes to preserve the world's aspect ratio. It precomputes lighting at occupied voxel centers and reads the result from the brick pool during rendering.
 
 The CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting or `--no-lighting` for uniform illumination. The Python API defaults to point lighting and accepts `directional_light=((0, 1, 0), (8, 8, 8))` to switch. The direction points towards the source in the CXW world's Y-up coordinates.
@@ -117,7 +119,17 @@ Continuous distribution of refractive indices is supported, allowing simulating 
 
 ![mirage](images/mirage.jpg)
 
-## TODO
+## Technical Details and Design Choices
+
+The window backend affects how quickly the app responds to keyboard and mouse input, how smoothly the window moves when dragged, and the frame rate. We compared three backends using the same scene on Windows.
+
+| Window backend | Observed behavior on Windows |
+| --- | --- |
+| GUI | Input lag, stuttering when dragging the window, and UI freezes. |
+| GGUI | Responsive interaction and about three times Tk's frame rate in testing. |
+| Tk | Responsive interaction, with additional overhead from copying frames to the CPU. |
+
+## TODOs
 
 - Default lights
 - Background images

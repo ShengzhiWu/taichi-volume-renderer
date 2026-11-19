@@ -575,22 +575,32 @@ class DisplayWindow():
             resize=None,
             context_menu=None,
             fly=False,
+            ggui=False,
         ):
+        if ggui and ti.lang.impl.current_cfg().arch != ti.vulkan:
+            raise ValueError("GGUI textures require the Taichi Vulkan backend")
         self.fly = fly
         self._initial_pose = self.scene.get_camera_pose()
         self._tab_pressed = self._reset_pressed = False
         self.scene.update_light()  # Calculate light and shadow
         self._last_frame = perf_counter()
 
-        windows = sys.platform == "win32"
-        resize = windows and (image_process is None if resize is None else resize)
+        native_window = ggui or sys.platform == "win32"
+        resize = native_window and (image_process is None if resize is None else resize)
         render = self.scene.render
-        if resize:
-            render = self.scene._make_render(ti.types.ndarray(dtype=ti.math.vec3, ndim=2), long_edge_fov=True)
+        if resize or ggui:
+            render = self.scene._make_render(
+                ti.types.ndarray(dtype=ti.math.vec3, ndim=2),
+                long_edge_fov=resize or self.scene._long_edge_fov,
+            )
             self.pixels = ti.Vector.ndarray(3, dtype=ti.f32, shape=self.resolution)
         elif not isinstance(self.pixels, ti.Field):
             self.pixels = ti.Vector.field(3, dtype=ti.f32, shape=self.resolution)
-        if windows:
+        if ggui:
+            from ._ggui_window import Window
+
+            gui = Window(title, self.resolution)
+        elif native_window:
             from ._tk_window import Window
 
             if context_menu is None:
@@ -603,20 +613,20 @@ class DisplayWindow():
             if self.scene._custom_fov:
                 self.scene._fov[None] /= self.scene._viewport_fov_ratio
         try:
-            self._show_loop(gui, windows, resize, render, update_light_each_step, callback,
+            self._show_loop(gui, native_window, resize, render, update_light_each_step, callback,
                             image_process, enable_mouse_rotating)
         finally:
             if self.scene._custom_fov:
                 self.scene._fov[None] *= self.scene._viewport_fov_ratio
             self.scene._viewport_fov_ratio = 1.0
-            if windows:
+            if native_window:
                 gui.close()
 
-    def _show_loop(self, gui, windows, resize, render, update_light_each_step, callback,
+    def _show_loop(self, gui, native_window, resize, render, update_light_each_step, callback,
                    image_process, enable_mouse_rotating):
         iteration = 0
         while gui.running:
-            if windows:
+            if native_window:
                 gui.poll_events()
                 if not gui.running:
                     break

@@ -4,3 +4,4 @@ build/
 .pypirc
 images/original_images/
 debug/
+/imgui.ini
