@@ -383,7 +383,7 @@ class DisplayWindow():
         point_lights_pos=None,  # Can be None, NumPy array or Taichi vector field. If left None, default lights applied.
         point_lights_intensity=None,  # Can be None, NumPy array or Taichi vector field. If left None, default lights applied.
         lighting=True,
-        resolution=(720, 720),
+        resolution=(1280, 720),
         ray_tracing_stop_threshold=0.01,  # 0 ~ 1
         background=[0.2, 0.2, 0.2],
         init_taichi=True,
@@ -526,7 +526,7 @@ class DisplayWindow():
             callback=None,  # Users can update smoke density, rotate camera etc. each step by assigning this callback function.
             image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
             enable_mouse_rotating=True,
-            resize=False,
+            resize=None,
             context_menu=None,
             fly=False,
         ):
@@ -537,11 +537,13 @@ class DisplayWindow():
         self._last_frame = perf_counter()
 
         windows = sys.platform == "win32"
-        resize = windows and resize
+        resize = windows and (image_process is None if resize is None else resize)
         render = self.scene.render
         if resize:
             render = self.scene._make_render(ti.types.ndarray(dtype=ti.math.vec3, ndim=2), long_edge_fov=True)
             self.pixels = ti.Vector.ndarray(3, dtype=ti.f32, shape=self.resolution)
+        elif not isinstance(self.pixels, ti.Field):
+            self.pixels = ti.Vector.field(3, dtype=ti.f32, shape=self.resolution)
         if windows:
             from ._tk_window import Window
 
@@ -612,7 +614,7 @@ def plot_volume(
     point_lights_pos=None,  # Can be None, NumPy array or Taichi vector field. If left None, default lights applied.
     point_lights_intensity=None,  # Can be None, NumPy array or Taichi vector field. If left None, default lights applied.
     lighting=True,
-    resolution=(720, 720),
+    resolution=(1280, 720),
     ray_tracing_stop_threshold=0.01,  # 0 ~ 1
     background=[0.2, 0.2, 0.2],
     init_taichi=True,

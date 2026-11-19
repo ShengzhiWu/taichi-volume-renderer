@@ -17,6 +17,10 @@ pip install taichi-volume-renderer
 
 ## Usage
 
+The dense and CXW viewers share orbit and first-person controls. Use WASD to move, Q/E to descend or ascend, Shift to move faster, Tab to switch camera modes, and R to restore the opening view. In the Windows Tk viewer, right-click to copy or paste a camera pose as JSON.
+
+The Windows viewer defaults to a resizable 1280×720 viewport with a fixed long-edge field of view. Pass `resize=False` to `DisplayWindow.show()` to keep a fixed resolution, or `resize=True` to use resizable Taichi ndarrays with an image-processing callback. Callbacks receive the original Taichi field by default.
+
 ### Interactive Static Scenes
 
 The simplest example would be rendering a static scene, with smoke density, color, and lighting all specified by a few NumPy arrays. See `examples/example.py`.
