@@ -56,6 +56,8 @@ CXW air has zero density. Each occupied voxel uses its packed RGB color and a de
 
 Use `--gamma` on the command line or `gamma=` in `DisplayWindow.from_cxw()` to raise each loaded RGB component to that power. The default is `1.0`. Values below 1 brighten midtone reflectance and values above 1 darken it.
 
+CXW camera rays march within the scene bounds without a step limit by default. Use `--max-steps N` or `max_steps=N` in `DisplayWindow.from_cxw()` to set a limit. Empty space counts toward an explicit limit.
+
 ```python
 from taichi_volume_renderer import DisplayWindow
 

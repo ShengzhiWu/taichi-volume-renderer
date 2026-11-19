@@ -59,7 +59,7 @@ class SparseSmokeScene(_OrbitScene):
         self, data, background=(0.2, 0.2, 0.2), camera="overview",
         density=0.22, step_length=1.0, light_step_length=3.0,
         lighting=True, point_lights_pos=None, point_lights_intensity=None,
-        materials=None, stop_threshold=0.01, max_steps=10000, gamma=1.0,
+        materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0),
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
@@ -87,9 +87,11 @@ class SparseSmokeScene(_OrbitScene):
         self._stop_threshold = float(stop_threshold)
         self._lighting = bool(lighting)
         self._directional = directional_light is not None
-        if not isinstance(max_steps, (int, np.integer)) or not 0 < max_steps <= 2**31 - 1:
-            raise ValueError("max_steps must be a positive 32-bit integer")
-        self._max_steps = int(max_steps)
+        if max_steps is not None and (
+            not isinstance(max_steps, (int, np.integer)) or not 0 < max_steps <= 2**31 - 1
+        ):
+            raise ValueError("max_steps must be None or a positive 32-bit integer")
+        self._max_steps = 0 if max_steps is None else int(max_steps)
         super().__init__(background, y_up=True)
         self._materials = ti.Vector.field(4, dtype=ti.f32, shape=65536)
         self._materials.from_numpy(material_array)
@@ -301,23 +303,20 @@ class SparseSmokeScene(_OrbitScene):
         return code, next_sample, brick, index
 
     @ti.func
-    def _advance(self, t, next_sample, step, remaining):
-        # Keep the original sample lattice. Empty space still consumes the step budget.
-        steps = ti.min(float(remaining), (next_sample - t) / step)
-        return ti.max(1, int(steps))
+    def _advance(self, t, next_sample, step):
+        # Round down to stay on the sample lattice without stepping past the next occupied region.
+        return ti.max(1.0, ti.floor((next_sample - t) / step))
 
     @ti.func
-    def _volume_exit(self, origin, direction):
+    def _volume_interval(self, origin, direction):
         half_extent = self._world_extent[None] * 0.5
         center = self._world_center[None]
-        _, end = _intersect_box(origin, direction, center - half_extent, center + half_extent,
-                                -1e30, 1e30)
-        return end
+        return _intersect_box(origin, direction, center - half_extent, center + half_extent, 0.0, 1e30)
 
     @ti.func
     def _light_transmittance(self, origin, direction):
         transmittance, t = 1.0, 0.0
-        end = self._volume_exit(origin, direction)
+        _, end = self._volume_interval(origin, direction)
         while t <= end and transmittance != 0.0:
             density, next_sample = 0.0, 1e30
             for entity in range(self.entity_count):
@@ -328,7 +327,7 @@ class SparseSmokeScene(_OrbitScene):
             if next_sample > end:
                 break
             transmittance *= 1.0 - density * self._light_step
-            next_t = t + float(self._advance(t, next_sample, self._light_step, 2**24)) * self._light_step
+            next_t = t + ti.min(self._advance(t, next_sample, self._light_step), 2**24) * self._light_step
             if next_t <= t:
                 break
             t = next_t
@@ -359,9 +358,13 @@ class SparseSmokeScene(_OrbitScene):
         direction = basis @ direction
         origin += direction * (ti.max(0.0, (origin - self._world_center[None]).norm() / self._scale - 0.866025) * self._scale)
         color = ti.Vector.zero(ti.f32, 3)
-        transmittance, index = 1.0, 0
-        end = self._volume_exit(origin, direction)
-        while index < self._max_steps and transmittance >= self._stop_threshold:
+        transmittance = 1.0
+        entry, end = self._volume_interval(origin, direction)
+        index = ti.ceil(entry / self._step)
+        while entry <= end and transmittance >= self._stop_threshold:
+            if ti.static(self._max_steps > 0):
+                if index >= self._max_steps:
+                    break
             t = index * self._step
             if t > end:
                 break
@@ -382,5 +385,8 @@ class SparseSmokeScene(_OrbitScene):
                     color, transmittance, lit_color / density, ti.Vector([1.0, 1.0, 1.0]),
                     density * self._step,
                 )
-            index += self._advance(t, next_sample, self._step, self._max_steps - index)
+            next_index = index + self._advance(t, next_sample, self._step)
+            if next_index <= index:
+                break
+            index = next_index
         return color + self._background[None] * transmittance

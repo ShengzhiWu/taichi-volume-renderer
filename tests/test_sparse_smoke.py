@@ -14,31 +14,39 @@ class SparseSmokeTest(unittest.TestCase):
         self.addCleanup(ti.reset)
         blocks = np.zeros((2, 512), dtype=np.uint16)
         blocks[0, 7] = 0xfc00  # Red voxel at (-1, 0, 0).
-        blocks[1, 0] = 0x83e0  # Green voxel at (256, 0, 0).
+        blocks[1, 0] = 0x83e0  # Green voxel at (6144, 0, 0), beyond the old step limit.
         table = np.full((2, 4096), -1, dtype=np.int32)
         table[0, 15] = 0
         table[1, 0] = 1
-        sectors = np.array([[-1, 0, 0], [2, 0, 0]], dtype=np.int32)
+        sectors = np.array([[-1, 0, 0], [48, 0, 0]], dtype=np.int32)
         entity = Entity(np.zeros(3), np.eye(3), 0, 2,
-                        np.array([-128, 0, 0]), np.array([384, 128, 128]))
+                        np.array([-128, 0, 0]), np.array([6272, 128, 128]))
         data = CXWData([entity], sectors, table, blocks, None)
-        scene = SparseSmokeScene(data, density=0.25, step_length=0.5,
-                                 lighting=False, background=(0, 0, 1))
-        scene._target[None] = [-1.5, 0.5, 0.5]
-        scene._view_basis[None] = np.eye(3, dtype=np.float32)
-        scene.camera_distance = 0.5
-        output = ti.Vector.field(3, dtype=ti.f32, shape=())
-
-        @ti.kernel
-        def trace():
-            output[None] = scene.ray_tracing(ti.Vector([0.0, 0.0, 0.0]), ti.Vector([1.0, 0.0, 0.0]))
-
-        trace()
         # Two half-voxel samples in each occupied voxel.
         opacity = 0.25 * 0.5
         remaining = 1.0 - opacity
         red = opacity * (remaining + remaining**2)
-        np.testing.assert_allclose(output[None].to_numpy(), [red, red * remaining**2, remaining**4])
+
+        for options, expected in (
+            ({}, [red, red * remaining**2, remaining**4]),
+            ({"max_steps": 10000}, [red, 0, remaining**2]),
+        ):
+            with self.subTest(options=options):
+                scene = SparseSmokeScene(data, density=0.25, step_length=0.5,
+                                         lighting=False, background=(0, 0, 1), **options)
+                scene._target[None] = [-1.5, 0.5, 0.5]
+                scene._view_basis[None] = np.eye(3, dtype=np.float32)
+                output = ti.Vector.field(3, dtype=ti.f32, shape=2)
+
+                @ti.kernel
+                def trace():
+                    origin = ti.Vector([0.0, 0.0, 0.0])
+                    output[0] = scene.ray_tracing(origin, ti.Vector([1.0, 0.0, 0.0]))
+                    output[1] = scene.ray_tracing(origin + ti.Vector([0.0, 0.0, 1.0]),
+                                                  ti.Vector([1.0, 0.0, 0.0]))
+
+                trace()
+                np.testing.assert_allclose(output.to_numpy(), [expected, [0, 0, 1]])
 
     def test_point_lit_sparse_volume_matches_padded_dense_renderer(self):
         ti.init(arch=ti.cpu)
