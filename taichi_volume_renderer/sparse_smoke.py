@@ -60,11 +60,12 @@ class SparseSmokeScene(_OrbitScene):
         density=0.22, step_length=1.0, light_step_length=3.0,
         lighting=True, point_lights_pos=None, point_lights_intensity=None,
         materials=None, stop_threshold=0.01, max_steps=10000, gamma=1.0,
-        directional_light=None,
+        directional_light=None, ambient_light=(0.0, 0.0, 0.0),
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
         A directional light is (direction towards the source in CXW world axes, RGB intensity).
+        Ambient light is a constant RGB intensity added at every occupied voxel.
         """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
             if not np.isfinite(value) or value <= 0:
@@ -73,6 +74,9 @@ class SparseSmokeScene(_OrbitScene):
             raise ValueError("density must be finite and nonnegative")
         if not np.isfinite(gamma) or gamma <= 0:
             raise ValueError("gamma must be finite and positive")
+        ambient = np.asarray(ambient_light, dtype=np.float32)
+        if ambient.shape != (3,) or not np.all(np.isfinite(ambient)) or np.any(ambient < 0):
+            raise ValueError("ambient_light must be a finite, nonnegative RGB triple")
         if not 0 < stop_threshold < 1:
             raise ValueError("stop_threshold must be between 0 and 1")
         material_array = _packed_materials(density) if materials is None else np.asarray(materials, dtype=np.float32)
@@ -139,6 +143,9 @@ class SparseSmokeScene(_OrbitScene):
         self._world_extent[None] = extent
         self._world_center = ti.Vector.field(3, dtype=ti.f32, shape=())
         self._world_center[None] = self._center
+        if self._lighting:
+            self._ambient = ti.Vector.field(3, dtype=ti.f32, shape=())
+            self._ambient[None] = ambient
         if self._lighting and self._directional:
             if point_lights_pos is not None or point_lights_intensity is not None:
                 raise ValueError("Specify a directional light or point lights")
@@ -153,7 +160,7 @@ class SparseSmokeScene(_OrbitScene):
             self._light_direction[None] = direction / length
             self._light_color = ti.Vector.field(3, dtype=ti.f32, shape=())
             self._light_color[None] = intensity
-            self._init_light_cache(data, intensity[None, :])
+            self._init_light_cache(data, np.vstack((ambient, intensity)))
         elif self._lighting:
             if point_lights_pos is None:
                 point_lights_pos = [[0, 0, 5]]
@@ -170,7 +177,7 @@ class SparseSmokeScene(_OrbitScene):
             # The dense renderer is Z-up; the CXW world and lookup are Y-up.
             self._lights_pos.from_numpy(np.ascontiguousarray(positions[:, [0, 2, 1]]))
             self._lights_intensity.from_numpy(intensities)
-            self._init_light_cache(data, intensities)
+            self._init_light_cache(data, np.vstack((ambient, intensities)))
         self._player_pose = data.player_pose
         self.set_view(camera)
         self.render = self._make_render(long_edge_fov=True)
@@ -412,11 +419,11 @@ class SparseSmokeScene(_OrbitScene):
     def _sample_light(self, voxel_center):
         light = ti.Vector([1.0, 1.0, 1.0])
         if ti.static(self._lighting):
+            light = self._ambient[None]
             if ti.static(self._directional):
                 visibility = self._light_transmittance(voxel_center, self._light_direction[None])
-                light = self._light_color[None] * visibility
+                light += self._light_color[None] * visibility
             else:
-                light = ti.Vector.zero(ti.f32, 3)
                 pos = (voxel_center - self._world_center[None]) / self._scale
                 for i in range(self._lights_pos.shape[0]):
                     offset = self._lights_pos[i] - pos

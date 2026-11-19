@@ -44,6 +44,8 @@ The dense and sparse smoke renderers use the same compositing and ray step facto
 
 The CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting or `--no-lighting` for uniform illumination. The Python API defaults to point lighting and accepts `directional_light=((0, 1, 0), (8, 8, 8))` to switch. The direction points towards the source in the CXW world's Y-up coordinates.
 
+With lighting enabled, `--ambient-light R G B` or `ambient_light=(R, G, B)` adds unshadowed light to every occupied voxel during light precomputation. The default is `(0, 0, 0)`.
+
 CXW air has zero density. Each occupied voxel uses its packed RGB color and a default density of 0.22 per voxel-width of ray travel along the longest axis. Change the density with `--density`. The default camera step is one voxel-width along that axis. Use `--step 0.5` for half steps. The light step is three voxel-widths along the longest axis.
 
 Use `--gamma` on the command line or `gamma=` in `DisplayWindow.from_cxw()` to raise each loaded RGB component to that power. The default is `1.0`. Values below 1 brighten midtone reflectance and values above 1 darken it.

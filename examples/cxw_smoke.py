@@ -84,12 +84,14 @@ def main():
     parser.set_defaults(lighting=True)
     parser.add_argument("--light-type", choices=("directional", "point"), default="directional",
                         help="Light source used by the viewer (default: directional)")
+    parser.add_argument("--ambient-light", nargs=3, type=float, default=(0.0, 0.0, 0.0),
+                        metavar=("R", "G", "B"), help="Unshadowed ambient RGB intensity (default: 0 0 0)")
     parser.add_argument("--fly", action="store_true", help="Start with first-person mouse controls")
     args = parser.parse_args()
     window = CXWViewer.from_cxw(
         args.path, resolution=args.resolution, taichi_arch=getattr(ti, args.arch),
         camera=args.camera, density=args.density, gamma=args.gamma,
-        step_length=args.step, lighting=args.lighting,
+        step_length=args.step, lighting=args.lighting, ambient_light=args.ambient_light,
         # Match a point light of intensity 200 at a distance of 5 from the scene center.
         directional_light=((0, 1, 0), (8, 8, 8)) if args.light_type == "directional" else None,
     )
