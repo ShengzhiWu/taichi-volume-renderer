@@ -5,7 +5,7 @@ import taichi as ti
 
 from . import _OrbitScene
 from .cxw import load_cxw
-from ._smoke import composite_sample
+from ._smoke import apply_rgb_gamma, composite_sample, validate_gamma
 
 
 @ti.func
@@ -71,8 +71,7 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError(f"{name} must be finite and positive")
         if not np.isfinite(density) or density < 0:
             raise ValueError("density must be finite and nonnegative")
-        if not np.isfinite(gamma) or gamma <= 0:
-            raise ValueError("gamma must be finite and positive")
+        validate_gamma(gamma)
         ambient = np.asarray(ambient_light, dtype=np.float32)
         if ambient.shape != (3,) or not np.all(np.isfinite(ambient)) or np.any(ambient < 0):
             raise ValueError("ambient_light must be a finite, nonnegative RGB triple")
@@ -83,12 +82,7 @@ class SparseSmokeScene(_OrbitScene):
             raise ValueError("materials must be a finite, nonnegative (65536, 4) RGB-density array")
         if gamma != 1.0:
             material_array = material_array.copy()
-            rgb = material_array[:, :3]
-            with np.errstate(over="raise", invalid="raise"):
-                try:
-                    np.power(rgb, gamma, out=rgb)
-                except FloatingPointError as exc:
-                    raise ValueError("gamma produced an out-of-range reflectance") from exc
+            material_array[:, :3] = apply_rgb_gamma(material_array[:, :3], gamma)
         self._step = float(step_length)
         self._light_step = float(light_step_length)
         self._stop_threshold = float(stop_threshold)

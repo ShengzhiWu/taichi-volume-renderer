@@ -5,7 +5,7 @@ from time import perf_counter
 import numpy as np
 import taichi as ti
 
-from ._smoke import composite_sample
+from ._smoke import apply_rgb_gamma, composite_sample, validate_gamma
 from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 
 __version__ = "1.6.0"
@@ -185,8 +185,11 @@ class Scene(_OrbitScene):
         smoke_density_factor=1.,
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
-        ray_tracing_max_steps=10000  # This only takes effect in scenes where light rays may bend, such as those containing refractive materials.
+        ray_tracing_max_steps=10000,
+        *, gamma=1.0,
     ):
+        validate_gamma(gamma)
+
         # Volume data
         self.smoke_density = smoke_density_taichi  # Smoke density
         self._smoke_density_factor = ti.field(dtype=ti.f32, shape=())
@@ -253,6 +256,13 @@ class Scene(_OrbitScene):
                 pass
             self.update_light = update_light
 
+        @ti.func
+        def color_at(i, j, k):
+            color = self.smoke_color[i, j, k]
+            if ti.static(gamma != 1.0):
+                color = ti.pow(ti.max(color, 0.0), gamma)
+            return color
+
         if self.index_of_refraction is None:
             @ti.func
             def ray_tracing_one_step(pos, d, pixels_color, transmittance):
@@ -263,7 +273,7 @@ class Scene(_OrbitScene):
                 if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
                     opacity = self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
                     pixels_color, transmittance = composite_sample(
-                        pixels_color, transmittance, self.smoke_color[x_int, y_int, z_int],
+                        pixels_color, transmittance, color_at(x_int, y_int, z_int),
                         self.light_density[x_int, y_int, z_int], opacity,
                     )
                 pos += d * self._step_length[None]
@@ -280,7 +290,7 @@ class Scene(_OrbitScene):
                 if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
                     opacity = self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
                     pixels_color, transmittance = composite_sample(
-                        pixels_color, transmittance, self.smoke_color[x_int, y_int, z_int],
+                        pixels_color, transmittance, color_at(x_int, y_int, z_int),
                         self.light_density[x_int, y_int, z_int], opacity,
                     )
 
@@ -391,7 +401,8 @@ class DisplayWindow():
         smoke_density_factor=1.,
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
-        ray_tracing_max_steps=10000  # This only takes effect in scenes where light rays may bend, such as those containing refractive materials.
+        ray_tracing_max_steps=10000,
+        *, gamma=1.0,
     ):
         if init_taichi:
             ti.init(arch=taichi_arch)
@@ -404,7 +415,8 @@ class DisplayWindow():
         if smoke_color is None:
             smoke_color = np.ones(list(smoke_density.shape) + [3])
         if not isinstance(smoke_color, ti.Field):
-            smoke_color_numpy = smoke_color
+            smoke_color_numpy = apply_rgb_gamma(smoke_color, gamma)
+            gamma = 1.0
             smoke_color = ti.Vector.field(3, dtype=ti.f32, shape=smoke_color_numpy.shape[:-1])
             smoke_color.from_numpy(smoke_color_numpy)
 
@@ -440,7 +452,8 @@ class DisplayWindow():
             smoke_density_factor=smoke_density_factor,
             ray_tracing_step_size_factor=ray_tracing_step_size_factor,
             light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
-            ray_tracing_max_steps=ray_tracing_max_steps)
+            ray_tracing_max_steps=ray_tracing_max_steps,
+            gamma=gamma)
 
         self._init_display(resolution)
 
@@ -631,7 +644,8 @@ def plot_volume(
     update_light_each_step=False,
     callback=None,  # Users can update smoke density, rotate camera etc. each step by assigning this callback function.
     image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
-    enable_mouse_rotating=True
+    enable_mouse_rotating=True,
+    *, gamma=1.0,
 ):
     window = DisplayWindow(
         smoke_density=smoke_density,
@@ -648,7 +662,8 @@ def plot_volume(
         smoke_density_factor=smoke_density_factor,
         ray_tracing_step_size_factor=ray_tracing_step_size_factor,
         light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
-        ray_tracing_max_steps=ray_tracing_max_steps
+        ray_tracing_max_steps=ray_tracing_max_steps,
+        gamma=gamma,
     )
     window.scene.set_camera_phi(camera_phi)
     window.scene.set_camera_theta(camera_theta)
