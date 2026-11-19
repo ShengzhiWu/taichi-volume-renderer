@@ -1,11 +1,14 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import taichi as ti
 
 from taichi_volume_renderer import DisplayWindow
-from taichi_volume_renderer.sparse_data import Entity, SparseVolumeData
+from taichi_volume_renderer.sparse_data import Entity, SparseVolumeData, index_brick_values
 from taichi_volume_renderer.sparse_smoke import SparseSmokeScene
+from taichi_volume_renderer.vdb import _density_bricks
 
 
 class SparseSmokeTest(unittest.TestCase):
@@ -29,6 +32,7 @@ class SparseSmokeTest(unittest.TestCase):
 
         for options, expected in (
             ({}, [red, red * remaining**2, remaining**4]),
+            ({"storage": "direct"}, [red, red * remaining**2, remaining**4]),
             ({"max_steps": 10000}, [red, 0, remaining**2]),
         ):
             with self.subTest(options=options):
@@ -47,6 +51,54 @@ class SparseSmokeTest(unittest.TestCase):
 
                 trace()
                 np.testing.assert_allclose(output.to_numpy(), [expected, [0, 0, 1]])
+
+    def test_density_only_bricks_keep_floating_point_values(self):
+        ti.init(arch=ti.cpu)
+        self.addCleanup(ti.reset)
+        blocks = np.zeros((1, 512), dtype=np.float32)
+        blocks[0, :2] = [0.123456, 0.234567]
+        table = np.full((1, 4096), -1, dtype=np.int32)
+        table[0, 0] = 0
+        entity = Entity(np.zeros(3), np.eye(3), 0, 1, np.zeros(3, dtype=np.int64), np.array([8, 8, 8]))
+        data = SparseVolumeData([entity], np.zeros((1, 3), dtype=np.int32), table, blocks, None)
+        first, second = blocks[0, :2]
+        expected = (1 - first) * (first + second * (1 - second))
+        for storage in ("auto", "indexed"):
+            with self.subTest(storage=storage):
+                with patch("taichi_volume_renderer.vdb.load_vdb", return_value=data):
+                    scene = SparseSmokeScene.from_file("test.vdb", lighting=False,
+                                                      background=(0, 0, 0), storage=storage)
+                self.assertEqual(scene._direct, storage == "auto")
+                scene._target[None] = [0.5, 0.5, 0.5]
+                scene._view_basis[None] = np.eye(3, dtype=np.float32)
+                output = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+                @ti.kernel
+                def trace():
+                    output[None] = scene.ray_tracing(ti.Vector([0.0, 0.0, 0.0]), ti.Vector([1.0, 0.0, 0.0]))
+
+                trace()
+                np.testing.assert_allclose(output[None].to_numpy(), [expected] * 3, atol=1e-7)
+
+    def test_indexed_storage_rejects_too_many_distinct_values(self):
+        blocks = np.arange(1, 2**16 + 1, dtype=np.float32).reshape(-1, 512)
+        with self.assertRaisesRegex(ValueError, "65,535 plus air"):
+            index_brick_values(blocks)
+        blocks[-1, -1] = 0
+        codes, materials = index_brick_values(blocks)
+        np.testing.assert_array_equal(materials[codes, 3], blocks)
+
+    def test_vdb_import_preserves_active_tile_and_negative_coordinates(self):
+        tile = SimpleNamespace(min=(-1, 0, 0), max=(1, 0, 0), value=0.125)
+        transform = SimpleNamespace(isLinear=True, indexToWorld=lambda xyz: np.asarray(xyz) * 0.5)
+        grid = SimpleNamespace(background=0.0, transform=transform, iterOnValues=lambda: iter([tile]))
+        data = _density_bricks(grid)
+
+        np.testing.assert_array_equal(data.sectors, [[-1, 0, 0], [0, 0, 0]])
+        self.assertEqual(data.brick_ids[0, 15], 0)
+        self.assertEqual(data.brick_ids[1, 0], 1)
+        np.testing.assert_array_equal(data.blocks[0, :8], [0, 0, 0, 0, 0, 0, 0, 0.125])
+        np.testing.assert_array_equal(data.blocks[1, :3], [0.125, 0.125, 0])
 
     def test_point_lit_sparse_volume_matches_padded_dense_renderer(self):
         ti.init(arch=ti.cpu)
@@ -69,10 +121,10 @@ class SparseSmokeTest(unittest.TestCase):
                     dense_color[x, z + 12, y + 8] = [1, 0, 0] if x < 16 else [0, 1, 0]
         entity = Entity(np.zeros(3), np.eye(3), 0, 1, np.zeros(3, dtype=np.int64), extent)
         data = SparseVolumeData([entity], np.zeros((1, 3), dtype=np.int32), table, blocks, None)
-        for intensity in (None, np.array([[35, 50, 65]], dtype=np.float32)):
-            with self.subTest(intensity=intensity):
+        for storage, intensity in (("indexed", None), ("direct", np.array([[35, 50, 65]], dtype=np.float32))):
+            with self.subTest(storage=storage, intensity=intensity):
                 sparse = SparseSmokeScene(data, density=density, step_length=0.5,
-                                          point_lights_intensity=intensity)
+                                          point_lights_intensity=intensity, storage=storage)
                 dense = DisplayWindow(dense_density, dense_color, init_taichi=False,
                                       resolution=(24, 20), ray_tracing_step_size_factor=0.5,
                                       point_lights_intensity=intensity)

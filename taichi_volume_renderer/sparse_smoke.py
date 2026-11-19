@@ -1,11 +1,13 @@
 """Taichi smoke ray marching over sparse 8³ voxel bricks."""
 
+from pathlib import Path
+
 import numpy as np
 import taichi as ti
 
 from . import _OrbitScene
 from .cxw import load_cxw, packed_color_materials
-from .sparse_data import SparseVolumeData
+from .sparse_data import SparseVolumeData, index_brick_values
 from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
                      directional_light_parameters, light_cache_channels, validate_gamma)
 
@@ -42,12 +44,25 @@ class SparseSmokeScene(_OrbitScene):
     def from_cxw(cls, path, *, gamma=1.0, **options):
         return cls(load_cxw(path), gamma=gamma, **options)
 
+    @classmethod
+    def from_file(cls, path, *, grid_name=None, **options):
+        suffix = Path(path).suffix.lower()
+        if suffix == ".cxw":
+            if grid_name is not None:
+                raise ValueError("grid_name applies only to VDB files")
+            return cls.from_cxw(path, **options)
+        if suffix == ".vdb":
+            from .vdb import load_vdb
+
+            return cls(load_vdb(path, grid_name=grid_name), **options)
+        raise ValueError("Expected a .cxw or .vdb file")
+
     def __init__(
         self, data: SparseVolumeData, background=(0.2, 0.2, 0.2), camera="overview",
         density=0.22, step_length=1.0, light_step_length=3.0,
         lighting=True, point_lights_pos=None, point_lights_intensity=None,
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
-        directional_light=None, ambient_light=(0.0, 0.0, 0.0),
+        directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -63,12 +78,6 @@ class SparseSmokeScene(_OrbitScene):
         ambient = ambient_light_parameters(ambient_light)
         if not 0 < stop_threshold < 1:
             raise ValueError("stop_threshold must be between 0 and 1")
-        material_array = packed_color_materials(density) if materials is None else np.asarray(materials, dtype=np.float32)
-        if material_array.shape != (65536, 4) or not np.all(np.isfinite(material_array)) or np.any(material_array < 0):
-            raise ValueError("materials must be a finite, nonnegative (65536, 4) RGB-density array")
-        if gamma != 1.0:
-            material_array = material_array.copy()
-            material_array[:, :3] = apply_rgb_gamma(material_array[:, :3], gamma)
         self._step = float(step_length)
         self._light_step = float(light_step_length)
         self._stop_threshold = float(stop_threshold)
@@ -80,20 +89,14 @@ class SparseSmokeScene(_OrbitScene):
             raise ValueError("max_steps must be None or a positive 32-bit integer")
         self._max_steps = 0 if max_steps is None else int(max_steps)
         super().__init__(background, y_up=True)
-        self._materials = ti.Vector.field(4, dtype=ti.f32, shape=65536)
-        self._materials.from_numpy(material_array)
-
         self.entity_count = len(data.entities)
         self.sector_count = len(data.sectors)
         self.brick_count = len(data.blocks)
         self._sectors = ti.Vector.field(3, dtype=ti.i32, shape=self.sector_count)
         self._brick_ids = ti.field(ti.i32, shape=data.brick_ids.shape)
-        # Pair two codes in one u32 to avoid requiring 16-bit GPU storage features.
-        packed = data.blocks.view(np.uint32)
-        self._blocks = ti.field(ti.u32, shape=packed.shape)
         self._sectors.from_numpy(data.sectors)
         self._brick_ids.from_numpy(data.brick_ids)
-        self._blocks.from_numpy(packed)
+        self._load_voxels(data.blocks, materials, density, gamma, storage)
 
         self._positions = ti.Vector.field(3, dtype=ti.f32, shape=self.entity_count)
         self._rotations = ti.Matrix.field(3, 3, dtype=ti.f32, shape=self.entity_count)
@@ -175,15 +178,88 @@ class SparseSmokeScene(_OrbitScene):
         else:
             raise ValueError("Expected 'overview' or an available 'saved' camera pose")
 
+    def _brick_field(self, channels):
+        field = ti.Vector.field(channels, dtype=ti.f32)
+        for channel in range(channels):
+            # Keep each channel in its own Vulkan buffer.
+            fields = ti.FieldsBuilder()
+            fields.dense(ti.ij, (self.brick_count, 512)).place(field.get_scalar_field(channel))
+            fields.finalize()
+        return field
+
+    def _load_voxels(self, blocks, materials, density, gamma, storage):
+        blocks = np.asarray(blocks)
+        shape = (self.brick_count, 512)
+        indexed_input = blocks.dtype == np.uint16 and blocks.shape == shape
+        if storage in (None, "auto"):
+            storage = "indexed" if indexed_input else "direct"
+        if storage not in ("indexed", "direct"):
+            raise ValueError("storage must be 'auto', 'indexed', or 'direct'")
+        self._direct = storage == "direct"
+
+        if not indexed_input:
+            if not np.issubdtype(blocks.dtype, np.floating) or blocks.shape not in (shape, (*shape, 4)):
+                raise ValueError("Expected uint16 indices, float densities, or float RGB-density bricks")
+            if materials is not None:
+                raise ValueError("Float bricks already contain their own voxel values")
+            if not self._direct:
+                if not np.all(np.isfinite(blocks)) or np.any(blocks < 0):
+                    raise ValueError("Voxel values must be finite and nonnegative")
+                blocks, materials = index_brick_values(blocks)
+                indexed_input = True
+
+        if indexed_input:
+            palette = packed_color_materials(density) if materials is None else np.asarray(materials, dtype=np.float32)
+            if palette.shape != (65536, 4) or not np.all(np.isfinite(palette)) or np.any(palette < 0):
+                raise ValueError("materials must be a finite, nonnegative (65536, 4) RGB-density array")
+            if gamma != 1.0:
+                palette = palette.copy()
+                palette[:, :3] = apply_rgb_gamma(palette[:, :3], gamma)
+
+            # Pair two codes in one u32 to avoid requiring 16-bit GPU storage features.
+            packed = np.ascontiguousarray(blocks).view(np.uint32)
+            self._blocks = ti.field(ti.u32)
+            self._materials = ti.Vector.field(4, dtype=ti.f32)
+            fields = ti.FieldsBuilder()
+            fields.dense(ti.ij, packed.shape).place(self._blocks)
+            fields.dense(ti.i, 65536).place(self._materials)
+            indexed_tree = fields.finalize()
+            self._blocks.from_numpy(packed)
+            self._materials.from_numpy(palette)
+
+            if self._direct:
+                self._value_channels = 4
+                self._values = self._brick_field(self._value_channels)
+                self._expand_indexed_voxels()
+                ti.sync()
+                indexed_tree.destroy()
+            return
+
+        if blocks.shape == shape:
+            blocks = blocks[..., None]
+        self._value_channels = blocks.shape[2]
+        self._values = self._brick_field(self._value_channels)
+        for channel in range(self._value_channels):
+            values = np.ascontiguousarray(blocks[..., channel], dtype=np.float32)
+            if not np.all(np.isfinite(values)) or np.any(values < 0):
+                raise ValueError("Direct voxel values must be finite and nonnegative")
+            if channel < self._value_channels - 1:
+                values = apply_rgb_gamma(values, gamma)
+            self._values.get_scalar_field(channel).from_numpy(values)
+
+    @ti.kernel
+    def _expand_indexed_voxels(self):
+        for brick, voxel in self._blocks:
+            for offset in ti.static(range(2)):
+                index = 2 * voxel + offset
+                code = self._block_code(brick, index)
+                if code != 0:
+                    self._values[brick, index] = self._materials[code]
+
     def _init_light_cache(self, data, intensities):
         # Store exactly the same light value once when all sources are achromatic.
         self._light_channels = light_cache_channels(intensities)
-        self._light_cache = ti.Vector.field(self._light_channels, dtype=ti.f32)
-        for channel in range(self._light_channels):
-            # Separate buffers keep each channel within the Vulkan buffer limit.
-            fields = ti.FieldsBuilder()
-            fields.dense(ti.ij, (self.brick_count, 512)).place(self._light_cache.get_scalar_field(channel))
-            fields.finalize()
+        self._light_cache = self._brick_field(self._light_channels)
 
         locations = np.full((self.brick_count, 4), -1, dtype=np.int32)
         for entity_id, entity in enumerate(data.entities):
@@ -210,9 +286,8 @@ class SparseSmokeScene(_OrbitScene):
     @ti.kernel
     def _cache_lighting(self, first: ti.i32, end: ti.i32):
         for brick, voxel in ti.ndrange((first, end), 512):
-            code = self._block_code(brick, voxel)
             location = self._brick_locations[brick]
-            if location.w >= 0 and code != 0 and self._materials[code].w != 0:
+            if location.w >= 0 and self._sample_voxel(brick, voxel, False).w != 0:
                 coordinates = location.xyz + ti.Vector([voxel & 7, (voxel >> 3) & 7, voxel >> 6])
                 entity = location.w
                 center = self._positions[entity] + self._rotations[entity] @ (ti.cast(coordinates, ti.f32) + 0.5)
@@ -224,6 +299,22 @@ class SparseSmokeScene(_OrbitScene):
     def _block_code(self, brick, voxel):
         pair = self._blocks[brick, voxel >> 1]
         return int((pair >> ((voxel & 1) * 16)) & ti.u32(0xffff))
+
+    @ti.func
+    def _sample_voxel(self, brick, voxel, with_color: ti.template()):
+        sample = ti.Vector.zero(ti.f32, 4)
+        if ti.static(self._direct):
+            if ti.static(with_color and self._value_channels == 4):
+                sample = self._values[brick, voxel]
+            else:
+                sample.w = self._values[brick, voxel][self._value_channels - 1]
+                if ti.static(with_color):
+                    sample.xyz = ti.Vector([1.0, 1.0, 1.0])
+        else:
+            code = self._block_code(brick, voxel)
+            if code != 0:
+                sample = self._materials[code]
+        return sample
 
     @ti.func
     def _cached_light(self, brick, voxel):
@@ -265,7 +356,7 @@ class SparseSmokeScene(_OrbitScene):
         # Match the dense sampler's cast from coordinates relative to the grid origin.
         voxel = voxel_lower + ti.cast(p - voxel_lower, ti.i32)
         sector_cell = voxel >> 7
-        code, next_sample = 0, t
+        next_sample = t
         brick, index = -1, 0
         if (sector_cell >= lower).all() and (sector_cell < upper).all():
             sector = self._sector_id(sector_cell, self._ranges[entity])
@@ -280,14 +371,13 @@ class SparseSmokeScene(_OrbitScene):
                 else:
                     local_voxel = voxel - brick_cell * 8
                     index = local_voxel.x + 8 * local_voxel.y + 64 * local_voxel.z
-                    code = self._block_code(brick, index)
         else:
             entry, exit = _intersect_box(local_origin, local_direction, voxel_lower - 1.0,
                                          upper * 128.0, t, end)
             next_sample = end
             if entry < exit:
                 next_sample = entry
-        return code, next_sample, brick, index
+        return next_sample, brick, index
 
     @ti.func
     def _advance(self, t, next_sample, step):
@@ -307,10 +397,10 @@ class SparseSmokeScene(_OrbitScene):
         while t <= end and transmittance != 0.0:
             density, next_sample = 0.0, 1e30
             for entity in range(self.entity_count):
-                code, next_entity_sample, _, _ = self._lookup(origin, direction, t, 1e30, entity)
+                next_entity_sample, brick, voxel = self._lookup(origin, direction, t, 1e30, entity)
                 next_sample = ti.min(next_sample, next_entity_sample)
-                if code != 0:
-                    density += self._materials[code].w
+                if brick >= 0:
+                    density += self._sample_voxel(brick, voxel, False).w
             if next_sample > end:
                 break
             transmittance *= 1.0 - density * self._light_step
@@ -358,10 +448,10 @@ class SparseSmokeScene(_OrbitScene):
             density, next_sample = 0.0, 1e30
             lit_color = ti.Vector.zero(ti.f32, 3)
             for entity in range(self.entity_count):
-                code, next_entity_sample, brick, voxel = self._lookup(origin, direction, t, 1e30, entity)
+                next_entity_sample, brick, voxel = self._lookup(origin, direction, t, 1e30, entity)
                 next_sample = ti.min(next_sample, next_entity_sample)
-                if code != 0:
-                    material = self._materials[code]
+                if brick >= 0:
+                    material = self._sample_voxel(brick, voxel, True)
                     density += material.w
                     if material.w != 0:
                         lit_color += material.xyz * self._cached_light(brick, voxel) * material.w

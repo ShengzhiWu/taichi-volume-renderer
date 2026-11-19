@@ -496,10 +496,24 @@ class DisplayWindow():
         """Create a CXW smoke window with an optional RGB power-law exponent."""
         from .sparse_smoke import SparseSmokeScene
 
+        return cls._from_sparse(SparseSmokeScene.from_cxw, path, resolution, init_taichi,
+                                taichi_arch, gamma=gamma, **scene_options)
+
+    @classmethod
+    def from_file(cls, path, resolution=(1280, 720), init_taichi=True,
+                  taichi_arch=ti.gpu, **scene_options):
+        """Create a sparse smoke window for a CXW or VDB file."""
+        from .sparse_smoke import SparseSmokeScene
+
+        return cls._from_sparse(SparseSmokeScene.from_file, path, resolution, init_taichi,
+                                taichi_arch, **scene_options)
+
+    @classmethod
+    def _from_sparse(cls, loader, path, resolution, init_taichi, taichi_arch, **scene_options):
         if init_taichi:
             ti.init(arch=taichi_arch)
         window = cls.__new__(cls)
-        window.scene = SparseSmokeScene.from_cxw(path, gamma=gamma, **scene_options)
+        window.scene = loader(path, **scene_options)
         window._init_display(resolution)
         return window
 

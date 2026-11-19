@@ -38,7 +38,7 @@ Volume rendering provides an impressive capability to display faintly visible ob
 Open a packed-color CXW v7 or v8 world from a source checkout:
 
 ```bash
-python -m examples.cxw_smoke "path/to/world.cxw" --camera saved --fly
+python -m examples.sparse_smoke "path/to/world.cxw" --camera saved --fly
 ```
 
 Omit `--camera saved` for an overview or `--fly` to start in orbit mode. Drag with the left mouse button to turn.
@@ -64,7 +64,18 @@ window = DisplayWindow.from_cxw("path/to/world.cxw", density=0.22)
 window.show()
 ```
 
-The loader returns `SparseVolumeData`, an in-memory sector index and pool of occupied 8³ bricks. The ray marcher jumps over missing sectors and bricks while preserving the spacing of its samples. The renderer uses ordinary Taichi fields for the brick pool and indices, including on Vulkan. Other importers can provide the same data structure to `SparseSmokeScene` with a custom `(65536, 4)` RGB-density material table. Material code zero is reserved for air.
+The loader returns `SparseVolumeData`, an in-memory sector index and pool of occupied 8³ bricks. In either storage mode, the renderer jumps over missing sectors and bricks while preserving the ray sample spacing.
+
+| Sparse storage mode | Values stored per voxel slot |
+| --- | --- |
+| Indexed | A 16-bit code into a `(65536, 4)` RGB-density material table. Code zero is air. |
+| Direct | A float32 density with uniform white color, or float32 RGB plus density. |
+
+The default `--storage auto` uses indexed storage for CXW block codes and direct storage for VDB density values. CXW v7/v8 stores a 16-bit block code with no per-file flag for a direct float format. This importer reads packed-color codes.
+
+Use `--storage direct` to force float storage or `--storage indexed` to force material indices. Indexed storage reserves code 0 for air and fails if there are more than 65,535 distinct non-air values. The same options are available as `storage=` in `DisplayWindow.from_file()` and `DisplayWindow.from_cxw()`.
+
+Other importers can pass float densities shaped `(brick_count, 512)` or float RGB-density values shaped `(brick_count, 512, 4)` as `SparseVolumeData.blocks`.
 
 ### High-Performance Real-Time Visualization
 
@@ -98,7 +109,13 @@ Although fully restoring the scene's original dynamic range and lighting details
 
 ### VDB
 
-You can also render VDB data with taichi-volume-renderer. See `examples/openvdb.py`. We can apply general lighting, or illuminate the volume from within like cloud-to-cloud lightning.
+The sparse viewer reads active voxels and constant-value tiles directly into bricks. Install the OpenVDB Python binding (`openvdb` or `pyopenvdb`) and run:
+
+```bash
+python -m examples.sparse_smoke "path/to/cloud.vdb"
+```
+
+The importer accepts nonnegative `FloatGrid` densities with zero background and uniform voxel size. It prefers a grid named `density`; pass `--grid NAME` to choose another grid. The [OpenVDB notebook](examples/openvdb.ipynb) shows how to render a grid after expanding it to a dense array.
 
 ![cloud](images/cloud.jpg)
 
