@@ -191,6 +191,8 @@ class Scene(_OrbitScene):
     ):
         validate_gamma(gamma)
         ambient = tuple(ambient_light_parameters(ambient_light))
+        light_direction = light_intensity = None
+        has_directional_light = directional_light is not None
         if directional_light is not None:
             if point_lights_pos_taichi is not None or point_lights_intensity_taichi is not None:
                 raise ValueError("Specify a directional light or point lights")
@@ -275,7 +277,7 @@ class Scene(_OrbitScene):
                 for i, j, k in self.light_density:
                     pos = (ti.Vector([i, j, k]) + 0.5) * pixel_size - ti.Vector(half_extent)
                     light = ti.Vector(ambient)
-                    if ti.static(directional_light is not None):
+                    if ti.static(has_directional_light):
                         light += ti.Vector(light_intensity) * light_transmittance(pos, ti.Vector(light_direction))
                     else:
                         for index in range(self.point_lights_pos.shape[0]):
