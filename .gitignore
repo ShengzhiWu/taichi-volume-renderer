@@ -5,3 +5,5 @@ build/
 images/original_images/
 debug/
 /imgui.ini
+__pycache__/
+*.pyc
