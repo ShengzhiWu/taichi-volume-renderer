@@ -40,6 +40,11 @@ def ambient_light_parameters(light):
     return ambient
 
 
+def light_cache_channels(colors):
+    colors = np.asarray(colors)
+    return 3 if np.any(colors != colors[:, :1]) else 1
+
+
 @ti.func
 def composite_sample(color, transmittance, sample_color, light, opacity):
     transmittance *= 1.0 - opacity

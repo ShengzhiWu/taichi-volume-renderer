@@ -6,7 +6,7 @@ import taichi as ti
 from . import _OrbitScene
 from .cxw import load_cxw
 from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
-                     directional_light_parameters, validate_gamma)
+                     directional_light_parameters, light_cache_channels, validate_gamma)
 
 
 @ti.func
@@ -187,7 +187,7 @@ class SparseSmokeScene(_OrbitScene):
 
     def _init_light_cache(self, data, intensities):
         # Store exactly the same light value once when all sources are achromatic.
-        self._light_channels = 3 if np.any(intensities != intensities[:, :1]) else 1
+        self._light_channels = light_cache_channels(intensities)
         self._light_cache = ti.Vector.field(self._light_channels, dtype=ti.f32)
         for channel in range(self._light_channels):
             # Separate buffers keep each channel within the Vulkan buffer limit.

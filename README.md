@@ -21,6 +21,8 @@ The dense and CXW viewers share orbit and first-person controls. Use WASD to mov
 
 The Windows viewer defaults to a resizable 1280×720 viewport with a fixed long-edge field of view. Pass `resize=False` to `DisplayWindow.show()` to keep a fixed resolution, or `resize=True` to use resizable Taichi ndarrays with an image-processing callback. Callbacks receive the original Taichi field by default.
 
+Dense volumes use one scale for all three axes, so their displayed proportions follow the array dimensions. Dense `Scene`, `DisplayWindow`, and `plot_volume` accept `gamma`, `ambient_light`, and `directional_light`. For example, use `directional_light=((0, 0, 1), (8, 8, 8))` for overhead white light in the dense renderer's Z-up coordinates. White directional and ambient lights share a single-channel cache. The dense renderer keeps all three cache channels for mutable point lights so their color can change between updates.
+
 ### Interactive Static Scenes
 
 The simplest example would be rendering a static scene, with smoke density, color, and lighting all specified by a few NumPy arrays. See `examples/example.py`.

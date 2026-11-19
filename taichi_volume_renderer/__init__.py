@@ -6,7 +6,7 @@ import numpy as np
 import taichi as ti
 
 from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
-                     directional_light_parameters, validate_gamma)
+                     directional_light_parameters, light_cache_channels, validate_gamma)
 from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 
 __version__ = "1.6.0"
@@ -243,8 +243,19 @@ class Scene(_OrbitScene):
         self._stop_threshold[None] = ray_tracing_stop_threshold  # Terminate ray tracing when the accumulated transparency of the view ray falls below this value.
 
         # Light density in volume
-        self.light_density = ti.Vector.field(3, dtype=ti.f32, shape=smoke_density_taichi.shape)
-        self.light_density.from_numpy(np.ones(list(smoke_density_taichi.shape) + [3]))
+        # Point-light fields can change color between updates.
+        channels = 3 if directional_light is None else light_cache_channels((ambient, light_intensity))
+        self.light_density = ti.Vector.field(channels, dtype=ti.f32, shape=grid_shape)
+        self.light_density.fill(1.0)
+
+        @ti.func
+        def light_at(i, j, k):
+            light = ti.Vector([1.0, 1.0, 1.0])
+            if ti.static(channels == 1):
+                light *= self.light_density[i, j, k][0]
+            else:
+                light = self.light_density[i, j, k]
+            return light
 
         if lighting:
             @ti.func
@@ -273,7 +284,10 @@ class Scene(_OrbitScene):
                             if distance_squared > 0.0:
                                 transmittance = light_transmittance(pos, offset.normalized())
                                 light += self.point_lights_intensity[index] * (transmittance / distance_squared)
-                    self.light_density[i, j, k] = light
+                    if ti.static(channels == 1):
+                        self.light_density[i, j, k][0] = light.x
+                    else:
+                        self.light_density[i, j, k] = light
             self.update_light = update_light
         else:
             @ti.kernel
@@ -299,7 +313,7 @@ class Scene(_OrbitScene):
                     opacity = self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
                     pixels_color, transmittance = composite_sample(
                         pixels_color, transmittance, color_at(x_int, y_int, z_int),
-                        self.light_density[x_int, y_int, z_int], opacity,
+                        light_at(x_int, y_int, z_int), opacity,
                     )
                 pos += d * self._step_length[None]
                 return pos, d, pixels_color, transmittance, False
@@ -316,7 +330,7 @@ class Scene(_OrbitScene):
                     opacity = self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
                     pixels_color, transmittance = composite_sample(
                         pixels_color, transmittance, color_at(x_int, y_int, z_int),
-                        self.light_density[x_int, y_int, z_int], opacity,
+                        light_at(x_int, y_int, z_int), opacity,
                     )
 
                     if x_int >= 1 and x_int < self.smoke_density.shape[0] - 1 and y_int >= 1 and y_int < self.smoke_density.shape[1] - 1 and z_int >= 1 and z_int < self.smoke_density.shape[2] - 1:
