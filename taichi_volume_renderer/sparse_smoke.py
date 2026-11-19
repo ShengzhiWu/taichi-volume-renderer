@@ -4,7 +4,8 @@ import numpy as np
 import taichi as ti
 
 from . import _OrbitScene
-from .cxw import load_cxw
+from .cxw import load_cxw, packed_color_materials
+from .sparse_data import SparseVolumeData
 from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
                      directional_light_parameters, light_cache_channels, validate_gamma)
 
@@ -33,20 +34,6 @@ def _distance_to_cell_exit(point, direction, cell, width):
     return ti.max(0.0, distance)
 
 
-def _packed_materials(density):
-    codes = np.arange(65536, dtype=np.uint32)
-    rgba = np.zeros((len(codes), 4), dtype=np.float32)
-    rgba[1:, 3] = density
-    opaque = codes >= 0x8000
-    emissive = (codes & 0xc000) == 0x4000
-    for channel, shift in enumerate((10, 5, 0)):
-        rgba[opaque, channel] = ((codes[opaque] >> shift) & 31) / 31
-    for channel, shift in enumerate((10, 6, 2)):
-        rgba[emissive, channel] = ((codes[emissive] >> shift) & 15) / 15
-    rgba[1:256, :3] = (0.72, 0.83, 0.9)
-    return rgba
-
-
 @ti.data_oriented
 class SparseSmokeScene(_OrbitScene):
     """Static sparse volume. Initialize Taichi before construction."""
@@ -56,7 +43,7 @@ class SparseSmokeScene(_OrbitScene):
         return cls(load_cxw(path), gamma=gamma, **options)
 
     def __init__(
-        self, data, background=(0.2, 0.2, 0.2), camera="overview",
+        self, data: SparseVolumeData, background=(0.2, 0.2, 0.2), camera="overview",
         density=0.22, step_length=1.0, light_step_length=3.0,
         lighting=True, point_lights_pos=None, point_lights_intensity=None,
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
@@ -64,7 +51,7 @@ class SparseSmokeScene(_OrbitScene):
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
-        A directional light is (direction towards the source in CXW world axes, RGB intensity).
+        A directional light is (direction towards the source in Y-up world axes, RGB intensity).
         Ambient light is a constant RGB intensity added at every occupied voxel.
         """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
@@ -76,7 +63,7 @@ class SparseSmokeScene(_OrbitScene):
         ambient = ambient_light_parameters(ambient_light)
         if not 0 < stop_threshold < 1:
             raise ValueError("stop_threshold must be between 0 and 1")
-        material_array = _packed_materials(density) if materials is None else np.asarray(materials, dtype=np.float32)
+        material_array = packed_color_materials(density) if materials is None else np.asarray(materials, dtype=np.float32)
         if material_array.shape != (65536, 4) or not np.all(np.isfinite(material_array)) or np.any(material_array < 0):
             raise ValueError("materials must be a finite, nonnegative (65536, 4) RGB-density array")
         if gamma != 1.0:
@@ -160,11 +147,11 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError("point lights need matching, finite Nx3 positions and nonnegative intensities")
             self._lights_pos = ti.Vector.field(3, dtype=ti.f32, shape=len(positions))
             self._lights_intensity = ti.Vector.field(3, dtype=ti.f32, shape=len(positions))
-            # The dense renderer is Z-up; the CXW world and lookup are Y-up.
+            # Point-light positions follow the dense API's Z-up convention.
             self._lights_pos.from_numpy(np.ascontiguousarray(positions[:, [0, 2, 1]]))
             self._lights_intensity.from_numpy(intensities)
             self._init_light_cache(data, np.vstack((ambient, intensities)))
-        self._player_pose = data.player_pose
+        self._saved_camera_pose = data.player_pose
         self.set_view(camera)
         self._long_edge_fov = True
         self.render = self._make_render()
@@ -177,8 +164,8 @@ class SparseSmokeScene(_OrbitScene):
             self.camera_distance = 3
             self.set_camera_phi(0)
             self.set_camera_theta(0)
-        elif camera == "saved" and self._player_pose is not None:
-            position, rotation = self._player_pose
+        elif camera == "saved" and self._saved_camera_pose is not None:
+            position, rotation = self._saved_camera_pose
             forward = rotation[:, 2]
             self._view_basis[None] = np.column_stack((-forward, rotation[:, 0], rotation[:, 1]))
             self.camera_distance = 64.0 / self._scale

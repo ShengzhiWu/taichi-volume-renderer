@@ -1,6 +1,5 @@
 """Read packed-color CXW saves into compact sector tables and a brick pool."""
 
-from dataclasses import dataclass
 import os
 import struct
 import zlib
@@ -8,6 +7,7 @@ import zlib
 import numpy as np
 
 from .math import rotation_quaternion_to_matrix
+from .sparse_data import Entity, SparseVolumeData
 
 
 ENTITY = struct.Struct("<16s3f4fH B 6f B Q I")
@@ -15,23 +15,23 @@ REGION_HEADER_SIZE = 4096 * 4 + 4
 MAX_INFLATED_SECTOR = 1 << 30
 
 
-@dataclass
-class Entity:
-    position: np.ndarray
-    rotation: np.ndarray
-    first_sector: int
-    end_sector: int
-    lower: np.ndarray
-    upper: np.ndarray
+# Preserve imports from the format module for existing callers.
+CXWData = SparseVolumeData
 
 
-@dataclass
-class CXWData:
-    entities: list
-    sectors: np.ndarray
-    brick_ids: np.ndarray
-    blocks: np.ndarray
-    player_pose: object
+def packed_color_materials(density):
+    """Decode packed CXW block colors into an RGB-density table."""
+    codes = np.arange(65536, dtype=np.uint32)
+    materials = np.zeros((len(codes), 4), dtype=np.float32)
+    materials[1:, 3] = density
+    opaque = codes >= 0x8000
+    emissive = (codes & 0xc000) == 0x4000
+    for channel, shift in enumerate((10, 5, 0)):
+        materials[opaque, channel] = ((codes[opaque] >> shift) & 31) / 31
+    for channel, shift in enumerate((10, 6, 2)):
+        materials[emissive, channel] = ((codes[emissive] >> shift) & 15) / 15
+    materials[1:256, :3] = (0.72, 0.83, 0.9)
+    return materials
 
 
 def _rotation(values):
@@ -164,5 +164,5 @@ def load_cxw(path):
 
     if not entities:
         raise ValueError("CXW world has no occupied bricks")
-    return CXWData(entities, np.asarray(sectors, dtype=np.int32), np.stack(tables),
-                   np.concatenate(chunks), player_pose)
+    return SparseVolumeData(entities, np.asarray(sectors, dtype=np.int32), np.stack(tables),
+                            np.concatenate(chunks), player_pose)

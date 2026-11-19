@@ -17,7 +17,7 @@ pip install taichi-volume-renderer
 
 ## Usage
 
-The dense and CXW viewers share orbit and first-person controls. Use WASD to move, Q/E to descend or ascend, Shift to move faster, Tab to switch camera modes, and R to restore the opening view. In the Windows Tk viewer, right-click to copy or paste a camera pose as JSON.
+The dense and sparse viewers share orbit and first-person controls. Use WASD to move, Q/E to descend or ascend, Shift to move faster, Tab to switch camera modes, and R to restore the opening view. In the Windows Tk viewer, right-click to copy or paste a camera pose as JSON.
 
 The Windows viewer defaults to a resizable 1280×720 viewport with a fixed long-edge field of view. Pass `resize=False` to `DisplayWindow.show()` to keep a fixed resolution, or `resize=True` to use resizable Taichi ndarrays with an image-processing callback. Callbacks receive the original Taichi field by default.
 
@@ -41,24 +41,21 @@ Open a packed-color CXW v7 or v8 world from a source checkout:
 python -m examples.cxw_smoke "path/to/world.cxw" --camera saved --fly
 ```
 
-Omit `--camera saved` for an overview. Drag with the left mouse button to turn, use WASD to move, and press Q or E to change height. Shift speeds up movement, Tab switches between orbit and first-person controls, and R resets the view.
+Omit `--camera saved` for an overview or `--fly` to start in orbit mode. Drag with the left mouse button to turn.
 
-On Windows, resizing the viewer updates the render resolution after the window size settles. The longer edge keeps a fixed field of view in both landscape and portrait.
-Right-click in the Windows viewer to copy the camera pose to the clipboard as JSON or restore a copied pose.
-
-The CXW command-line viewer defaults to Vulkan and GGUI, displaying frames as GPU textures without CPU readback. Use `--no-ggui` to select the standard window, which is Tk on Windows. Choosing a non-Vulkan compute backend also selects the standard window unless GGUI is explicitly requested. In Python, initialize Taichi with `ti.vulkan` and pass `ggui=True` to `DisplayWindow.show()`. GGUI supports keyboard navigation, mouse drag, and adaptive resolution. The Tk viewer provides the wheel and camera clipboard menu.
+The sparse command-line viewer defaults to Vulkan and GGUI, displaying frames as GPU textures without CPU readback. Use `--no-ggui` to select the standard window, which is Tk on Windows. Choosing a non-Vulkan compute backend also selects the standard window unless GGUI is explicitly requested. In Python, initialize Taichi with `ti.vulkan` and pass `ggui=True` to `DisplayWindow.show()`. GGUI supports keyboard navigation, mouse drag, and adaptive resolution. The Tk viewer provides the wheel and camera clipboard menu.
 
 The dense and sparse smoke renderers use the same compositing and ray step factors. The sparse renderer uses a single scale for all axes to preserve the world's aspect ratio. It precomputes lighting at occupied voxel centers and reads the result from the brick pool during rendering.
 
-The CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting or `--no-lighting` for uniform illumination. The Python API defaults to point lighting and accepts `directional_light=((0, 1, 0), (8, 8, 8))` to switch. The direction points towards the source in the CXW world's Y-up coordinates.
+The CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting or `--no-lighting` for uniform illumination. The Python API defaults to point lighting and accepts `directional_light=((0, 1, 0), (8, 8, 8))` to switch. The direction points towards the source in the sparse scene's Y-up coordinates.
 
 With lighting enabled, `--ambient-light R G B` or `ambient_light=(R, G, B)` adds unshadowed light to every occupied voxel during light precomputation. The default is `(0, 0, 0)`.
 
-CXW air has zero density. Each occupied voxel uses its packed RGB color and a default density of 0.22 per voxel-width of ray travel along the longest axis. Change the density with `--density`. The default camera step is one voxel-width along that axis. Use `--step 0.5` for half steps. The light step is three voxel-widths along the longest axis.
+For CXW imports, air has zero density and each occupied voxel uses its packed RGB color at a default density of 0.22. Use `--density` to set the occupied voxel density. The default camera and light steps are one and three voxel widths, respectively. Use `--step 0.5` for half-voxel camera steps.
 
 Use `--gamma` on the command line or `gamma=` in `DisplayWindow.from_cxw()` to raise each loaded RGB component to that power. The default is `1.0`. Values below 1 brighten midtone reflectance and values above 1 darken it.
 
-CXW camera rays march within the scene bounds without a step limit by default. Use `--max-steps N` or `max_steps=N` in `DisplayWindow.from_cxw()` to set a limit. Empty space counts toward an explicit limit.
+Sparse camera rays march within the scene bounds without a step limit by default. Use `--max-steps N` on the command line or `max_steps=N` in Python to set a limit. Empty space counts toward an explicit limit.
 
 ```python
 from taichi_volume_renderer import DisplayWindow
@@ -67,7 +64,7 @@ window = DisplayWindow.from_cxw("path/to/world.cxw", density=0.22)
 window.show()
 ```
 
-The loader retains the occupied 8³ bricks in a compact pool. The ray marcher jumps over missing sectors and bricks while preserving the spacing of its samples. The renderer uses ordinary Taichi fields for the brick pool and indices, including on Vulkan. For custom packed brick data, `SparseSmokeScene` accepts a `(65536, 4)` RGB-density material table. Material code zero is reserved for air.
+The loader returns `SparseVolumeData`, an in-memory sector index and pool of occupied 8³ bricks. The ray marcher jumps over missing sectors and bricks while preserving the spacing of its samples. The renderer uses ordinary Taichi fields for the brick pool and indices, including on Vulkan. Other importers can provide the same data structure to `SparseSmokeScene` with a custom `(65536, 4)` RGB-density material table. Material code zero is reserved for air.
 
 ### High-Performance Real-Time Visualization
 

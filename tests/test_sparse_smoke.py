@@ -4,7 +4,7 @@ import numpy as np
 import taichi as ti
 
 from taichi_volume_renderer import DisplayWindow
-from taichi_volume_renderer.cxw import CXWData, Entity
+from taichi_volume_renderer.sparse_data import Entity, SparseVolumeData
 from taichi_volume_renderer.sparse_smoke import SparseSmokeScene
 
 
@@ -21,7 +21,7 @@ class SparseSmokeTest(unittest.TestCase):
         sectors = np.array([[-1, 0, 0], [48, 0, 0]], dtype=np.int32)
         entity = Entity(np.zeros(3), np.eye(3), 0, 2,
                         np.array([-128, 0, 0]), np.array([6272, 128, 128]))
-        data = CXWData([entity], sectors, table, blocks, None)
+        data = SparseVolumeData([entity], sectors, table, blocks, None)
         # Two half-voxel samples in each occupied voxel.
         opacity = 0.25 * 0.5
         remaining = 1.0 - opacity
@@ -68,7 +68,7 @@ class SparseSmokeTest(unittest.TestCase):
                     dense_density[x, z + 12, y + 8] = density * extent.max()
                     dense_color[x, z + 12, y + 8] = [1, 0, 0] if x < 16 else [0, 1, 0]
         entity = Entity(np.zeros(3), np.eye(3), 0, 1, np.zeros(3, dtype=np.int64), extent)
-        data = CXWData([entity], np.zeros((1, 3), dtype=np.int32), table, blocks, None)
+        data = SparseVolumeData([entity], np.zeros((1, 3), dtype=np.int32), table, blocks, None)
         for intensity in (None, np.array([[35, 50, 65]], dtype=np.float32)):
             with self.subTest(intensity=intensity):
                 sparse = SparseSmokeScene(data, density=density, step_length=0.5,
