@@ -43,6 +43,8 @@ python -m examples.sparse_smoke "path/to/world.cxw" --camera saved --fly
 
 Omit `--camera saved` for an overview or `--fly` to start in orbit mode. Drag with the left mouse button to turn.
 
+Run `python -m examples.sparse_smoke --help` to list all command-line options.
+
 The sparse command-line viewer defaults to Vulkan and GGUI, displaying frames as GPU textures without CPU readback. Use `--no-ggui` to select the standard window, which is Tk on Windows. Choosing a non-Vulkan compute backend also selects the standard window unless GGUI is explicitly requested. In Python, initialize Taichi with `ti.vulkan` and pass `ggui=True` to `DisplayWindow.show()`. GGUI supports keyboard navigation, mouse drag, and adaptive resolution. The Tk viewer provides the wheel and camera clipboard menu.
 
 The dense and sparse smoke renderers use the same compositing and ray step factors. The sparse renderer uses a single scale for all axes to preserve the world's aspect ratio. It precomputes lighting at occupied voxel centers and reads the result from the brick pool during rendering.
