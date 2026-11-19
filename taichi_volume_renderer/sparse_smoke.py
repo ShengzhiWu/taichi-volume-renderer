@@ -5,7 +5,8 @@ import taichi as ti
 
 from . import _OrbitScene
 from .cxw import load_cxw
-from ._smoke import apply_rgb_gamma, composite_sample, directional_light_parameters, validate_gamma
+from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
+                     directional_light_parameters, validate_gamma)
 
 
 @ti.func
@@ -72,9 +73,7 @@ class SparseSmokeScene(_OrbitScene):
         if not np.isfinite(density) or density < 0:
             raise ValueError("density must be finite and nonnegative")
         validate_gamma(gamma)
-        ambient = np.asarray(ambient_light, dtype=np.float32)
-        if ambient.shape != (3,) or not np.all(np.isfinite(ambient)) or np.any(ambient < 0):
-            raise ValueError("ambient_light must be a finite, nonnegative RGB triple")
+        ambient = ambient_light_parameters(ambient_light)
         if not 0 < stop_threshold < 1:
             raise ValueError("stop_threshold must be between 0 and 1")
         material_array = _packed_materials(density) if materials is None else np.asarray(materials, dtype=np.float32)

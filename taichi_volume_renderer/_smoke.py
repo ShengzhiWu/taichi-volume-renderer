@@ -33,6 +33,13 @@ def directional_light_parameters(light):
     return (direction / length).astype(np.float32), intensity
 
 
+def ambient_light_parameters(light):
+    ambient = np.asarray(light, dtype=np.float32)
+    if ambient.shape != (3,) or not np.all(np.isfinite(ambient)) or np.any(ambient < 0):
+        raise ValueError("ambient_light must be a finite, nonnegative RGB triple")
+    return ambient
+
+
 @ti.func
 def composite_sample(color, transmittance, sample_color, light, opacity):
     transmittance *= 1.0 - opacity

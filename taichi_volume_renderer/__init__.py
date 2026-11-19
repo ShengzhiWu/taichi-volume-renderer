@@ -5,7 +5,8 @@ from time import perf_counter
 import numpy as np
 import taichi as ti
 
-from ._smoke import apply_rgb_gamma, composite_sample, directional_light_parameters, validate_gamma
+from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
+                     directional_light_parameters, validate_gamma)
 from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 
 __version__ = "1.6.0"
@@ -186,9 +187,10 @@ class Scene(_OrbitScene):
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
         ray_tracing_max_steps=10000,
-        *, gamma=1.0, directional_light=None,
+        *, gamma=1.0, directional_light=None, ambient_light=(0.0, 0.0, 0.0),
     ):
         validate_gamma(gamma)
+        ambient = tuple(ambient_light_parameters(ambient_light))
         if directional_light is not None:
             if point_lights_pos_taichi is not None or point_lights_intensity_taichi is not None:
                 raise ValueError("Specify a directional light or point lights")
@@ -261,9 +263,9 @@ class Scene(_OrbitScene):
             def update_light():
                 for i, j, k in self.light_density:
                     pos = (ti.Vector([i, j, k]) + 0.5) * pixel_size - ti.Vector(half_extent)
-                    light = ti.Vector([0., 0., 0.])
+                    light = ti.Vector(ambient)
                     if ti.static(directional_light is not None):
-                        light = ti.Vector(light_intensity) * light_transmittance(pos, ti.Vector(light_direction))
+                        light += ti.Vector(light_intensity) * light_transmittance(pos, ti.Vector(light_direction))
                     else:
                         for index in range(self.point_lights_pos.shape[0]):
                             offset = self.point_lights_pos[index] - pos
@@ -425,7 +427,7 @@ class DisplayWindow():
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
         ray_tracing_max_steps=10000,
-        *, gamma=1.0, directional_light=None,
+        *, gamma=1.0, directional_light=None, ambient_light=(0.0, 0.0, 0.0),
     ):
         if init_taichi:
             ti.init(arch=taichi_arch)
@@ -462,7 +464,7 @@ class DisplayWindow():
             ray_tracing_step_size_factor=ray_tracing_step_size_factor,
             light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
             ray_tracing_max_steps=ray_tracing_max_steps,
-            gamma=gamma, directional_light=directional_light)
+            gamma=gamma, directional_light=directional_light, ambient_light=ambient_light)
 
         self._init_display(resolution)
 
@@ -654,7 +656,7 @@ def plot_volume(
     callback=None,  # Users can update smoke density, rotate camera etc. each step by assigning this callback function.
     image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
     enable_mouse_rotating=True,
-    *, gamma=1.0, directional_light=None,
+    *, gamma=1.0, directional_light=None, ambient_light=(0.0, 0.0, 0.0),
 ):
     window = DisplayWindow(
         smoke_density=smoke_density,
@@ -672,7 +674,7 @@ def plot_volume(
         ray_tracing_step_size_factor=ray_tracing_step_size_factor,
         light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
         ray_tracing_max_steps=ray_tracing_max_steps,
-        gamma=gamma, directional_light=directional_light,
+        gamma=gamma, directional_light=directional_light, ambient_light=ambient_light,
     )
     window.scene.set_camera_phi(camera_phi)
     window.scene.set_camera_theta(camera_theta)
