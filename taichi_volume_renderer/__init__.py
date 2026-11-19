@@ -1,14 +1,22 @@
+import json
 import sys
+from time import perf_counter
 
 import numpy as np
 import taichi as ti
 
 from ._smoke import composite_sample
+from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 
 __version__ = "1.6.0"
 
 class _OrbitScene:
-    def __init__(self, background):
+    def __init__(self, background, y_up=False):
+        self._y_up = y_up
+        self._scale = self._navigation_unit = 1.0
+        self._target = ti.Vector.field(3, dtype=ti.f32, shape=())
+        self._view_basis = ti.Matrix.field(3, 3, dtype=ti.f32, shape=())
+        self._view_basis[None] = np.eye(3, dtype=np.float32)
         # Camera
         self._fov = ti.field(dtype=ti.f32, shape=())
         self._fov[None] = 0.5924  # 2 * tan(vertical field of view / 2)
@@ -92,6 +100,77 @@ class _OrbitScene:
         self._background[None] = ti.Vector(value)
 
 
+    def _pose_axes(self, vector):
+        # Clipboard poses use Y-up voxel coordinates for both renderers.
+        return vector if self._y_up else vector[[0, 2, 1]]
+
+    def _camera_axes(self):
+        phi = self.get_camera_phi(degrees=False)
+        theta = self.get_camera_theta(degrees=False)
+        basis = self._view_basis[None].to_numpy()
+        backward = basis @ [np.cos(phi) * np.cos(theta), np.sin(phi) * np.cos(theta), np.sin(theta)]
+        right = basis @ [-np.sin(phi), np.cos(phi), 0.0]
+        return backward, right
+
+    def get_camera_pose(self):
+        """Return the world position, XYZW rotation, and orbit distance in voxel units."""
+        backward, right = self._camera_axes()
+        backward, right = self._pose_axes(backward), self._pose_axes(right)
+        forward = -backward
+        rotation = np.column_stack((right, np.cross(forward, right), forward))
+        distance = self.camera_distance * self._scale / self._navigation_unit
+        position = self._pose_axes(self._target[None].to_numpy()) / self._navigation_unit + distance * backward
+        quaternion = rotation_matrix_to_quaternion(rotation)
+        return {
+            "position": position.tolist(),
+            "rotation": quaternion[[1, 2, 3, 0]].tolist(),
+            "orbit_distance": distance,
+        }
+
+    def set_camera_pose(self, pose):
+        """Restore a camera pose in Y-up voxel coordinates."""
+        if not isinstance(pose, dict) or "position" not in pose or "rotation" not in pose:
+            raise ValueError("Expected a camera position and rotation")
+        position = np.asarray(pose["position"], dtype=np.float64)
+        quaternion = np.asarray(pose["rotation"], dtype=np.float64)
+        distance = float(pose.get("orbit_distance", 64.0))
+        if (position.shape != (3,) or quaternion.shape != (4,)
+                or not np.isfinite(position).all() or not np.isfinite(quaternion).all()
+                or not np.isfinite(distance) or distance <= 0):
+            raise ValueError("Invalid camera pose")
+        norm = np.linalg.norm(quaternion)
+        if not np.isfinite(norm) or norm == 0:
+            raise ValueError("Invalid camera rotation")
+        rotation = rotation_quaternion_to_matrix(quaternion[[3, 0, 1, 2]] / norm)
+        forward = self._pose_axes(rotation[:, 2])
+        target = (self._pose_axes(position) + distance * forward) * self._navigation_unit
+        camera_distance = distance * self._navigation_unit / self._scale
+        limit = np.finfo(np.float32).max
+        if (distance > limit or np.any(np.abs(position) > limit) or np.any(np.abs(target) > limit)
+                or not np.finfo(np.float32).tiny <= camera_distance <= limit):
+            raise ValueError("Camera pose is outside the supported range")
+
+        self._view_basis[None] = np.column_stack((-forward, self._pose_axes(rotation[:, 0]), self._pose_axes(rotation[:, 1])))
+        self._target[None] = target
+        self.camera_distance = camera_distance
+        self.set_camera_phi(0)
+        self.set_camera_theta(0)
+
+    def move_camera(self, forward, right, up):
+        """Translate the camera by distances in voxel units."""
+        backward_axis, right_axis = self._camera_axes()
+        offset = -forward * backward_axis + right * right_axis + self._pose_axes(np.array([0.0, up, 0.0]))
+        self._target[None] = self._target[None].to_numpy() + offset * self._navigation_unit
+
+    def turn_camera(self, delta_phi, delta_theta):
+        """Change the view direction while keeping the camera in place."""
+        backward, _ = self._camera_axes()
+        self.set_camera_phi(self.get_camera_phi() + delta_phi)
+        self.set_camera_theta(self.get_camera_theta() + delta_theta)
+        new_backward, _ = self._camera_axes()
+        offset = (backward - new_backward) * self.camera_distance * self._scale
+        self._target[None] = self._target[None].to_numpy() + offset
+
 class Scene(_OrbitScene):
     def __init__(
         self,
@@ -126,6 +205,7 @@ class Scene(_OrbitScene):
         grid_shape = smoke_density_taichi.shape
         grid_size = max(grid_shape)
         pixel_size = 1 / grid_size
+        self._navigation_unit = pixel_size
         half_extent = tuple(n * pixel_size / 2 for n in grid_shape)
 
         @ti.func
@@ -235,9 +315,12 @@ class Scene(_OrbitScene):
 
         @ti.func
         def ray_tracing(pos, d):
+            basis = self._view_basis[None]
+            pos = self._target[None] + basis @ pos
+            d = basis @ d
             pixels_color = ti.Vector([0., 0., 0.])
             transmittance = 1.
-            distance_to_sphere = self._camera_distance[None] - 0.866025  # The constant here is 0.5 * 2 ** 0.5
+            distance_to_sphere = pos.norm() - 0.866025  # Radius of the sphere enclosing the volume.
             if distance_to_sphere > 0:
                 pos += d * distance_to_sphere
             i = ray_tracing_max_steps
@@ -379,6 +462,7 @@ class DisplayWindow():
         self.pixels = ti.Vector.field(3, dtype=ti.f32, shape=resolution)
 
         # Interaction
+        self.fly = False
         self.mouse_pressed = False
         self.cursor_start_pos = (-1, -1)
         self.camera_rotation_speed = 230.  # Unit: degree pre image width or height
@@ -388,14 +472,52 @@ class DisplayWindow():
         pass
 
     def mouse_drag_event(self, pos, pos_delta):
-        self.scene.set_camera_phi(self.scene.get_camera_phi() - pos_delta[0] * self.camera_rotation_speed)
-        self.scene.set_camera_theta(self.scene.get_camera_theta() - pos_delta[1] * self.camera_rotation_speed)
+        delta_phi = -pos_delta[0] * self.camera_rotation_speed
+        delta_theta = -pos_delta[1] * self.camera_rotation_speed
+        if self.fly:
+            self.scene.turn_camera(delta_phi, delta_theta)
+        else:
+            self.scene.set_camera_phi(self.scene.get_camera_phi() + delta_phi)
+            self.scene.set_camera_theta(self.scene.get_camera_theta() + delta_theta)
 
     def mouse_wheel_event(self, delta):
-        self.scene.camera_distance *= (1 - self.camera_zooming_speed) ** delta[1]
+        if self.fly:
+            self.scene.move_camera(0.05 * delta[1], 0, 0)
+        else:
+            self.scene.camera_distance *= (1 - self.camera_zooming_speed) ** (2 * delta[1])
+
+    def _copy_view(self, window):
+        window.copy_text(json.dumps(self.scene.get_camera_pose()))
+
+    def _paste_view(self, window):
+        try:
+            self.scene.set_camera_pose(json.loads(window.read_text()))
+        except (ValueError, TypeError, OverflowError):
+            window.show_error("粘贴视角", "剪贴板中没有有效的视角 JSON。")
 
     def _handle_keyboard(self, gui):
-        pass
+        now = perf_counter()
+        duration = min(now - self._last_frame, 0.1)
+        self._last_frame = now
+        if gui.is_pressed(ti.GUI.ESCAPE):
+            gui.running = False
+            return
+        tab = gui.is_pressed(ti.GUI.TAB)
+        if tab and not self._tab_pressed:
+            self.fly = not self.fly
+        self._tab_pressed = tab
+        reset = gui.is_pressed("r")
+        if reset and not self._reset_pressed:
+            self.scene.set_camera_pose(self._initial_pose)
+        self._reset_pressed = reset
+
+        forward = int(gui.is_pressed("w")) - int(gui.is_pressed("s"))
+        right = int(gui.is_pressed("d")) - int(gui.is_pressed("a"))
+        up = int(gui.is_pressed("e")) - int(gui.is_pressed("q"))
+        if forward or right or up:
+            speed = 640.0 if gui.is_pressed(ti.GUI.SHIFT) else 120.0
+            distance = speed * duration
+            self.scene.move_camera(2.5 * forward * distance, right * distance, up * distance)
     
     def show(
             self,
@@ -405,9 +527,14 @@ class DisplayWindow():
             image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
             enable_mouse_rotating=True,
             resize=False,
-            context_menu=(),
+            context_menu=None,
+            fly=False,
         ):
+        self.fly = fly
+        self._initial_pose = self.scene.get_camera_pose()
+        self._tab_pressed = self._reset_pressed = False
         self.scene.update_light()  # Calculate light and shadow
+        self._last_frame = perf_counter()
 
         windows = sys.platform == "win32"
         resize = windows and resize
@@ -418,6 +545,8 @@ class DisplayWindow():
         if windows:
             from ._tk_window import Window
 
+            if context_menu is None:
+                context_menu = (("复制视角", self._copy_view), ("粘贴视角", self._paste_view))
             gui = Window(title, self.resolution, resize=resize, context_menu=context_menu)
         else:
             gui = ti.GUI(title, res=self.resolution)

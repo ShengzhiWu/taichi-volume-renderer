@@ -5,7 +5,6 @@ import taichi as ti
 
 from . import _OrbitScene
 from .cxw import load_cxw
-from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 from ._smoke import composite_sample
 
 
@@ -98,9 +97,7 @@ class SparseSmokeScene(_OrbitScene):
         if not isinstance(max_steps, (int, np.integer)) or not 0 < max_steps <= 2**31 - 1:
             raise ValueError("max_steps must be a positive 32-bit integer")
         self._max_steps = int(max_steps)
-        super().__init__(background)
-        self._target = ti.Vector.field(3, dtype=ti.f32, shape=())
-        self._view_basis = ti.Matrix.field(3, 3, dtype=ti.f32, shape=())
+        super().__init__(background, y_up=True)
         self._materials = ti.Vector.field(4, dtype=ti.f32, shape=65536)
         self._materials.from_numpy(material_array)
 
@@ -200,72 +197,6 @@ class SparseSmokeScene(_OrbitScene):
             self.set_camera_theta(0)
         else:
             raise ValueError("Expected 'overview' or an available 'saved' camera pose")
-
-    def _camera_axes(self):
-        phi = self.get_camera_phi(degrees=False)
-        theta = self.get_camera_theta(degrees=False)
-        basis = self._view_basis[None].to_numpy()
-        backward = basis @ [np.cos(phi) * np.cos(theta), np.sin(phi) * np.cos(theta), np.sin(theta)]
-        right = basis @ [-np.sin(phi), np.cos(phi), 0.0]
-        return backward, right
-
-    def get_camera_pose(self):
-        """Return the world position, XYZW rotation, and orbit distance in voxel units."""
-        backward, right = self._camera_axes()
-        forward = -backward
-        rotation = np.column_stack((right, np.cross(forward, right), forward))
-        distance = self.camera_distance * self._scale
-        position = self._target[None].to_numpy() + distance * backward
-        quaternion = rotation_matrix_to_quaternion(rotation)
-        return {
-            "position": position.tolist(),
-            "rotation": quaternion[[1, 2, 3, 0]].tolist(),
-            "orbit_distance": distance,
-        }
-
-    def set_camera_pose(self, pose):
-        """Restore a camera pose in CXW world coordinates."""
-        if not isinstance(pose, dict) or "position" not in pose or "rotation" not in pose:
-            raise ValueError("Expected a camera position and rotation")
-        position = np.asarray(pose["position"], dtype=np.float64)
-        quaternion = np.asarray(pose["rotation"], dtype=np.float64)
-        distance = float(pose.get("orbit_distance", 64.0))
-        if (position.shape != (3,) or quaternion.shape != (4,)
-                or not np.isfinite(position).all() or not np.isfinite(quaternion).all()
-                or not np.isfinite(distance) or distance <= 0):
-            raise ValueError("Invalid camera pose")
-        norm = np.linalg.norm(quaternion)
-        if not np.isfinite(norm) or norm == 0:
-            raise ValueError("Invalid camera rotation")
-        rotation = rotation_quaternion_to_matrix(quaternion[[3, 0, 1, 2]] / norm)
-        forward = rotation[:, 2]
-        target = position + distance * forward
-        camera_distance = distance / self._scale
-        limit = np.finfo(np.float32).max
-        if (distance > limit or np.any(np.abs(position) > limit) or np.any(np.abs(target) > limit)
-                or not np.finfo(np.float32).tiny <= camera_distance <= limit):
-            raise ValueError("Camera pose is outside the supported range")
-
-        self._view_basis[None] = np.column_stack((-forward, rotation[:, 0], rotation[:, 1]))
-        self._target[None] = target
-        self.camera_distance = camera_distance
-        self.set_camera_phi(0)
-        self.set_camera_theta(0)
-
-    def move_camera(self, forward, right, up):
-        """Translate the camera by distances in voxel units."""
-        backward_axis, right_axis = self._camera_axes()
-        offset = -forward * backward_axis + right * right_axis + np.array([0.0, up, 0.0])
-        self._target[None] = self._target[None].to_numpy() + offset
-
-    def turn_camera(self, delta_phi, delta_theta):
-        """Change the view direction while keeping the camera in place."""
-        backward, _ = self._camera_axes()
-        self.set_camera_phi(self.get_camera_phi() + delta_phi)
-        self.set_camera_theta(self.get_camera_theta() + delta_theta)
-        new_backward, _ = self._camera_axes()
-        offset = (backward - new_backward) * self.camera_distance * self._scale
-        self._target[None] = self._target[None].to_numpy() + offset
 
     def _init_light_cache(self, data, intensities):
         # Store exactly the same light value once when all sources are achromatic.
@@ -438,7 +369,7 @@ class SparseSmokeScene(_OrbitScene):
         basis = self._view_basis[None]
         origin = self._target[None] + basis @ (pos * self._scale)
         direction = basis @ direction
-        origin += direction * (ti.max(0.0, self._camera_distance[None] - 0.866025) * self._scale)
+        origin += direction * (ti.max(0.0, (origin - self._world_center[None]).norm() / self._scale - 0.866025) * self._scale)
         color = ti.Vector.zero(ti.f32, 3)
         transmittance, index = 1.0, 0
         end = self._volume_exit(origin, direction)
