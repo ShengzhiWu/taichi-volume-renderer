@@ -1,6 +1,6 @@
-# 仓库协作规则
+# Repository Collaboration Rules
 
-- 当用户要求添加功能、参数、快捷键或其他内容时，先检查仓库中是否已有相同或类似的实现。若已存在，告诉用户现有内容在哪里、如何使用，以及与所请求内容有何差异。不要重复添加。
-- 默认跳过烟测。
-- 仓库里的命令示例统一使用占位路径，省略本地测试场景的真实文件名。
-- 尽量避免平行实现。如果复用会增加总代码量、引入过度封装、降低性能或使接口复杂化，可以保留多个实现。
+- When the user asks to add a feature, parameter, keyboard shortcut, or anything else, first check the repository for an identical or similar implementation. If one exists, tell the user where to find it, how to use it, and how it differs from the request. Avoid adding duplicates.
+- Skip smoke tests by default.
+- Use placeholder paths in all command examples in the repository. Omit actual filenames of local test scenes.
+- Avoid parallel implementations where practical. Keep separate implementations if sharing code would increase the total amount of code, introduce unnecessary abstraction, reduce performance, or complicate interfaces.
