@@ -164,7 +164,8 @@ class SparseSmokeScene(_OrbitScene):
             self._init_light_cache(data, np.vstack((ambient, intensities)))
         self._player_pose = data.player_pose
         self.set_view(camera)
-        self.render = self._make_render(long_edge_fov=True)
+        self._long_edge_fov = True
+        self.render = self._make_render()
 
     def set_view(self, camera):
         """Reset to the overview or to the saved player view, when provided."""

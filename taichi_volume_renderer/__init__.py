@@ -21,6 +21,9 @@ class _OrbitScene:
         # Camera
         self._fov = ti.field(dtype=ti.f32, shape=())
         self._fov[None] = 0.5924  # 2 * tan(vertical field of view / 2)
+        self._long_edge_fov = False
+        self._viewport_fov_ratio = 1.0
+        self._custom_fov = False
         self._camera_distance = ti.field(dtype=ti.f32, shape=())
         self._camera_distance[None] = 3
         self._camera_phi = ti.field(dtype=ti.f32, shape=())
@@ -28,7 +31,9 @@ class _OrbitScene:
         self._background = ti.Vector.field(3, dtype=ti.f32, shape=())
         self._background[None] = ti.Vector(background)
 
-    def _make_render(self, pixel_type=ti.template(), long_edge_fov=False):
+    def _make_render(self, pixel_type=ti.template(), long_edge_fov=None):
+        if long_edge_fov is None:
+            long_edge_fov = self._long_edge_fov
         @ti.kernel
         def render(pixels: pixel_type):
             camera_pos = self._camera_distance[None] * ti.Vector([
@@ -63,10 +68,11 @@ class _OrbitScene:
         return render
 
     def get_vertical_field_of_view(self, degrees=True):  # Get vertical field of view. Default is 33°.
-        return np.arctan(self._fov[None] / 2) * 2 * (180 / np.pi if degrees else 1)
+        return np.arctan(self._fov[None] * self._viewport_fov_ratio / 2) * 2 * (180 / np.pi if degrees else 1)
 
     def set_vertical_field_of_view(self, angle, degrees=True):  # Set vertical field of view. Default is 33°.
-        self._fov[None] = 2 * np.tan(angle * (np.pi / 180 if degrees else 1) / 2)
+        self._fov[None] = 2 * np.tan(angle * (np.pi / 180 if degrees else 1) / 2) / self._viewport_fov_ratio
+        self._custom_fov = True
 
     def get_camera_phi(self, degrees=True):
         return self._camera_phi[None] * (180 / np.pi if degrees else 1)
@@ -592,10 +598,17 @@ class DisplayWindow():
             gui = Window(title, self.resolution, resize=resize, context_menu=context_menu)
         else:
             gui = ti.GUI(title, res=self.resolution)
+        if resize or self.scene._long_edge_fov:
+            self.scene._viewport_fov_ratio = self.resolution[1] / max(self.resolution)
+            if self.scene._custom_fov:
+                self.scene._fov[None] /= self.scene._viewport_fov_ratio
         try:
             self._show_loop(gui, windows, resize, render, update_light_each_step, callback,
                             image_process, enable_mouse_rotating)
         finally:
+            if self.scene._custom_fov:
+                self.scene._fov[None] *= self.scene._viewport_fov_ratio
+            self.scene._viewport_fov_ratio = 1.0
             if windows:
                 gui.close()
 
@@ -612,6 +625,7 @@ class DisplayWindow():
                     if resolution is not None and resolution != self.resolution:
                         self.pixels = ti.Vector.ndarray(3, dtype=ti.f32, shape=resolution)
                         self.resolution = resolution
+                        self.scene._viewport_fov_ratio = resolution[1] / max(resolution)
                         self.mouse_pressed = False
 
             for event in gui.get_events(ti.GUI.WHEEL):
