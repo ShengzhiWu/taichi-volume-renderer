@@ -145,6 +145,8 @@ The window backend affects how quickly the app responds to keyboard and mouse in
 
 ## TODOs
 
+- Add a direct-value mode to the on-disk sparse volume format for floating-point density and optional RGB.
+- Evaluate 3D DCT and quantization for compressing direct-value bricks, measuring file size, decode time, and rendering artifacts.
 - Default lights
 - Background images
 - Ray intersection with the scene
