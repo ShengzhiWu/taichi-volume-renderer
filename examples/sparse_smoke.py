@@ -42,7 +42,7 @@ def main():
                         help="Light source used by the viewer (default: directional)")
     parser.add_argument("--ambient-light", nargs=3, type=float, default=(0.0, 0.0, 0.0),
                         metavar=("R", "G", "B"), help="Unshadowed ambient RGB intensity (default: 0 0 0)")
-    parser.add_argument("--fly", action="store_true", help="Start with first-person mouse controls")
+    parser.add_argument("--fly", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     ggui = args.ggui if args.ggui is not None else args.arch in (None, "vulkan")
     if ggui and args.arch not in (None, "vulkan"):
@@ -69,8 +69,8 @@ def main():
         )
     except (ValueError, ImportError, OSError) as exc:
         parser.error(str(exc))
-    window.show(title="Sparse smoke | Drag to look | WASD move | Q/E height | Tab orbit/fly | R reset",
-                resize=True, fly=args.fly, ggui=ggui)
+    window.show(title="Sparse smoke | Drag to look | WASD move | Q/E height | R reset",
+                resize=True, ggui=ggui)
 
 
 if __name__ == "__main__":

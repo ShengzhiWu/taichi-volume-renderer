@@ -135,13 +135,14 @@ class _OrbitScene:
             "orbit_distance": distance,
         }
 
-    def set_camera_pose(self, pose):
+    def set_camera_pose(self, pose, *, preserve_orbit_distance=False):
         """Restore position and view direction from a Y-up voxel pose."""
         if not isinstance(pose, dict) or "position" not in pose or "rotation" not in pose:
             raise ValueError("Expected a camera position and rotation")
         position = np.asarray(pose["position"], dtype=np.float64)
         quaternion = np.asarray(pose["rotation"], dtype=np.float64)
-        distance = float(pose.get("orbit_distance", 64.0))
+        distance = (self.camera_distance * self._scale / self._navigation_unit
+                    if preserve_orbit_distance else float(pose.get("orbit_distance", 64.0)))
         if (position.shape != (3,) or quaternion.shape != (4,)
                 or not np.isfinite(position).all() or not np.isfinite(quaternion).all()
                 or not np.isfinite(distance) or distance <= 0):
@@ -159,7 +160,8 @@ class _OrbitScene:
             raise ValueError("Camera pose is outside the supported range")
 
         self._target[None] = target
-        self.camera_distance = camera_distance
+        if not preserve_orbit_distance:
+            self.camera_distance = camera_distance
         self._set_camera_direction(-forward)
 
     def move_camera(self, forward, right, up):
@@ -517,14 +519,15 @@ class DisplayWindow():
             ti.init(arch=taichi_arch)
         window = cls.__new__(cls)
         window.scene = loader(path, **scene_options)
-        window._init_display(resolution)
+        window._init_display(resolution, orbit_controls=False)
         return window
 
-    def _init_display(self, resolution):
+    def _init_display(self, resolution, orbit_controls=True):
         self.resolution = tuple(resolution)
         self.pixels = ti.Vector.field(3, dtype=ti.f32, shape=resolution)
 
         # Interaction
+        self._orbit_controls = orbit_controls
         self.fly = False
         self.mouse_pressed = False
         self.cursor_start_pos = (-1, -1)
@@ -537,13 +540,13 @@ class DisplayWindow():
     def mouse_drag_event(self, pos, pos_delta):
         delta_phi = -pos_delta[0] * self.camera_rotation_speed
         delta_theta = -pos_delta[1] * self.camera_rotation_speed
-        if self.fly:
+        if self.fly or not self._orbit_controls:
             self.scene.turn_camera(delta_phi, delta_theta)
         else:
             self.scene.orbit_camera(delta_phi, delta_theta)
 
     def mouse_wheel_event(self, delta):
-        if self.fly:
+        if self.fly or not self._orbit_controls:
             self.scene.move_camera(0.05 * delta[1], 0, 0)
         else:
             self.scene.camera_distance *= (1 - self.camera_zooming_speed) ** (2 * delta[1])
@@ -553,7 +556,8 @@ class DisplayWindow():
 
     def _paste_view(self, window):
         try:
-            self.scene.set_camera_pose(json.loads(window.read_text()))
+            self.scene.set_camera_pose(json.loads(window.read_text()),
+                                       preserve_orbit_distance=not self._orbit_controls)
         except (ValueError, TypeError, OverflowError):
             window.show_error("粘贴视角", "剪贴板中没有有效的视角 JSON。")
 
@@ -565,12 +569,13 @@ class DisplayWindow():
             gui.running = False
             return
         tab = gui.is_pressed(ti.GUI.TAB)
-        if tab and not self._tab_pressed:
+        if self._orbit_controls and tab and not self._tab_pressed:
             self.fly = not self.fly
         self._tab_pressed = tab
         reset = gui.is_pressed("r")
         if reset and not self._reset_pressed:
-            self.scene.set_camera_pose(self._initial_pose)
+            self.scene.set_camera_pose(self._initial_pose,
+                                       preserve_orbit_distance=not self._orbit_controls)
         self._reset_pressed = reset
 
         forward = int(gui.is_pressed("w")) - int(gui.is_pressed("s"))

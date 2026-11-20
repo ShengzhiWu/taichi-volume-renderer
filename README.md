@@ -17,7 +17,7 @@ pip install taichi-volume-renderer
 
 ## Usage
 
-The dense and sparse viewers share orbit and first-person controls. Use WASD to move, Q/E to descend or ascend, Shift to move faster, Tab to switch camera modes, and R to restore the opening view. In the Windows Tk viewer, right-click to copy or paste a camera pose as JSON.
+Use WASD to move, Q/E to descend or ascend, Shift to move faster, and R to restore the opening view. In the dense viewer, Tab switches between orbit and first-person controls. In the Windows Tk viewer, right-click to copy or paste a camera pose as JSON.
 
 The Windows viewer defaults to a resizable 1280×720 viewport with a fixed long-edge field of view. Pass `resize=False` to `DisplayWindow.show()` to keep a fixed resolution, or `resize=True` to use resizable Taichi ndarrays with an image-processing callback. Callbacks receive the original Taichi field by default.
 
@@ -38,10 +38,10 @@ Volume rendering provides an impressive capability to display faintly visible ob
 Open a packed-color CXW v7 or v8 world from a source checkout:
 
 ```bash
-python -m examples.sparse_smoke "path/to/world.cxw" --camera saved --fly
+python -m examples.sparse_smoke "path/to/world.cxw" --camera saved
 ```
 
-Omit `--camera saved` for an overview or `--fly` to start in orbit mode. Drag with the left mouse button to turn.
+Omit `--camera saved` for an overview. The sparse viewer uses first-person controls. Drag with the left mouse button to turn in place. Use W/S or, in the standard window, the mouse wheel to move forward and backward along the view direction.
 
 Run `python -m examples.sparse_smoke --help` to list all command-line options.
 
