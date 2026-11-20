@@ -8,23 +8,10 @@ import taichi as ti
 from . import _OrbitScene
 from .cxw import load_cxw, packed_color_materials
 from .sparse_data import SparseVolumeData, index_brick_values
-from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
-                     directional_light_parameters, light_cache_channels,
-                     refract_at_interface, refract_from_gradient, validate_gamma)
-
-
-@ti.func
-def _intersect_box(origin, direction, lower, upper, start, end):
-    for axis in ti.static(range(3)):
-        if direction[axis] == 0:
-            if origin[axis] < lower[axis] or origin[axis] >= upper[axis]:
-                end = -1.0
-        else:
-            lo = (lower[axis] - origin[axis]) / direction[axis]
-            hi = (upper[axis] - origin[axis]) / direction[axis]
-            start = ti.max(start, ti.min(lo, hi))
-            end = ti.min(end, ti.max(lo, hi))
-    return start, end
+from ._smoke import (INTERFACE_ENTRY_OFFSET, REFRACTIVE_MAX_STEPS, ambient_light_parameters, apply_rgb_gamma,
+                     composite_sample, crosses_refractive_interface, directional_light_parameters,
+                     follow_refractive_interface, intersect_box, light_cache_channels,
+                     refract_from_gradient, validate_gamma)
 
 
 @ti.func
@@ -68,7 +55,7 @@ class SparseSmokeScene(_OrbitScene):
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
-        A directional light is (direction towards the source in Y-up world axes, RGB intensity).
+        A directional light is (direction towards the source in Z-up world axes, RGB intensity).
         Ambient light is a constant RGB intensity added at every occupied voxel.
         index_of_refraction is an optional 65,536-entry lookup table for indexed storage.
         Entry 0 is the ambient medium, including air outside allocated bricks.
@@ -96,9 +83,9 @@ class SparseSmokeScene(_OrbitScene):
             raise ValueError("refraction_mode must be 'gradient' or 'interface'")
         self._refractive = index_of_refraction is not None
         self._interface = self._refractive and refraction_mode == "interface"
-        default_max_steps = 4600 if self._interface else (10000 if self._refractive else 0)
+        default_max_steps = REFRACTIVE_MAX_STEPS if self._refractive else 0
         self._max_steps = default_max_steps if max_steps is None else int(max_steps)
-        super().__init__(background, y_up=True)
+        super().__init__(background)
         self.entity_count = len(data.entities)
         self.sector_count = len(data.sectors)
         self.brick_count = len(data.blocks)
@@ -168,13 +155,11 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError("point lights need matching, finite Nx3 positions and nonnegative intensities")
             self._lights_pos = ti.Vector.field(3, dtype=ti.f32, shape=len(positions))
             self._lights_intensity = ti.Vector.field(3, dtype=ti.f32, shape=len(positions))
-            # Point-light positions follow the dense API's Z-up convention.
-            self._lights_pos.from_numpy(np.ascontiguousarray(positions[:, [0, 2, 1]]))
+            self._lights_pos.from_numpy(np.ascontiguousarray(positions))
             self._lights_intensity.from_numpy(intensities)
             self._init_light_cache(data, np.vstack((ambient, intensities)))
         self._saved_camera_pose = data.player_pose
         self.set_view(camera)
-        self._long_edge_fov = True
         self.render = self._make_render()
 
     def set_view(self, camera):
@@ -368,8 +353,10 @@ class SparseSmokeScene(_OrbitScene):
         p = local_origin + local_direction * t
         lower, upper = self._lower[entity], self._upper[entity]
         voxel_lower = lower * 128
-        # Match the dense sampler's cast from coordinates relative to the grid origin.
-        voxel = voxel_lower + ti.cast(p - voxel_lower, ti.i32)
+        relative = p - voxel_lower
+        if ti.static(self._interface):
+            relative = ti.floor(relative)
+        voxel = voxel_lower + ti.cast(relative, ti.i32)
         sector_cell = voxel >> 7
         next_sample = t
         brick, index = -1, 0
@@ -387,8 +374,8 @@ class SparseSmokeScene(_OrbitScene):
                     local_voxel = voxel - brick_cell * 8
                     index = local_voxel.x + 8 * local_voxel.y + 64 * local_voxel.z
         else:
-            entry, exit = _intersect_box(local_origin, local_direction, voxel_lower - 1.0,
-                                         upper * 128.0, t, end)
+            box_lower = voxel_lower - ti.static(0.0 if self._interface else 1.0)
+            entry, exit = intersect_box(local_origin, local_direction, box_lower, upper * 128.0, t, end)
             next_sample = end
             if entry < exit:
                 next_sample = entry
@@ -400,15 +387,15 @@ class SparseSmokeScene(_OrbitScene):
         return ti.max(1.0, ti.floor((next_sample - t) / step))
 
     @ti.func
-    def _volume_interval(self, origin, direction, padding):
-        half_extent = self._world_extent[None] * 0.5 + padding
+    def _volume_interval(self, origin, direction):
+        half_extent = self._world_extent[None] * 0.5
         center = self._world_center[None]
-        return _intersect_box(origin, direction, center - half_extent, center + half_extent, 0.0, 1e30)
+        return intersect_box(origin, direction, center - half_extent, center + half_extent, 0.0, 1e30)
 
     @ti.func
     def _light_transmittance(self, origin, direction):
         transmittance, t = 1.0, 0.0
-        _, end = self._volume_interval(origin, direction, 0.)
+        _, end = self._volume_interval(origin, direction)
         while t <= end and transmittance != 0.0:
             density, next_sample = 0.0, 1e30
             for entity in range(self.entity_count):
@@ -457,22 +444,6 @@ class SparseSmokeScene(_OrbitScene):
         return index
 
     @ti.func
-    def _interface_normal(self, point, direction):
-        gradient = ti.Vector.zero(ti.f32, 3)
-        for sample in range(6):
-            axis = sample // 2
-            wide = sample % 2 != 0
-            radius = 2.576 if wide else 1.12
-            weight = .58 if wide else 1.
-            offset = ti.Vector.zero(ti.f32, 3)
-            offset[axis] = radius
-            gradient[axis] += weight * (self._ior_at(point + offset) - self._ior_at(point - offset))
-        normal = -direction
-        if gradient.norm_sqr() > 0.:
-            normal = gradient.normalized()
-        return normal
-
-    @ti.func
     def _sample_light(self, voxel_center):
         light = ti.Vector([1.0, 1.0, 1.0])
         if ti.static(self._lighting):
@@ -497,21 +468,21 @@ class SparseSmokeScene(_OrbitScene):
             origin += direction * (ti.max(0.0, (origin - self._world_center[None]).norm() / self._scale - 0.866025) * self._scale)
         color = ti.Vector.zero(ti.f32, 3)
         transmittance = 1.0
-        padding = ti.static(1. if self._refractive and not self._interface else 0.)
-        entry, end = self._volume_interval(origin, direction, padding)
+        entry, end = self._volume_interval(origin, direction)
         index = ti.ceil(entry / self._step)
         previous_steps = 0.
         previous_medium, interfaces = 1., 0
         lower, upper = origin, origin
-        if ti.static(self._interface):
-            if entry >= end:
-                end = -1.
-            origin += direction * (entry + .004)
-            index = 0.
-            previous_medium = self._ior[0]
+        if ti.static(self._refractive):
             half_extent = self._world_extent[None] * .5
             lower = self._world_center[None] - half_extent
             upper = self._world_center[None] + half_extent
+        if ti.static(self._interface):
+            if entry >= end:
+                end = -1.
+            origin += direction * (entry + INTERFACE_ENTRY_OFFSET)
+            index = 0.
+            previous_medium = self._ior[0]
         while entry <= end and transmittance >= self._stop_threshold:
             if ti.static(self._max_steps > 0):
                 if index + previous_steps >= self._max_steps:
@@ -527,7 +498,7 @@ class SparseSmokeScene(_OrbitScene):
             density, next_sample = 0.0, 1e30
             lit_color = ti.Vector.zero(ti.f32, 3)
             medium = 1.
-            has_brick, occupied = False, False
+            has_brick = False
             if ti.static(self._refractive):
                 medium = self._ior[0]
             for entity in range(self.entity_count):
@@ -544,24 +515,19 @@ class SparseSmokeScene(_OrbitScene):
                             medium = self._ior[code]
                         if ti.static(self._interface):
                             has_brick = True
-                            occupied = occupied or code != 0
 
             if ti.static(self._interface):
-                # A non-refractive voxel receives the ray without an air interface.
-                if medium != previous_medium and (medium != self._ior[0] or not occupied) and interfaces < 19:
-                    normal = self._interface_normal(origin - direction * (.5 * self._step), direction)
-                    bent, fresnel, reflected = refract_at_interface(
-                        direction, normal, previous_medium, medium,
+                if crosses_refractive_interface(previous_medium, medium, self._ior[0], density != 0., interfaces):
+                    origin, direction, fresnel, reflected = follow_refractive_interface(
+                        origin, direction, previous_medium, medium, self._step, 1., self._ior_at,
                     )
                     interfaces += 1
                     if reflected:
-                        origin -= direction * self._step
-                        origin += bent * (.35 * self._step)
-                        direction = bent
                         continue
                     color += transmittance * fresnel * self._background[None]
                     transmittance *= 1. - fresnel
-                    direction = bent
+                    # The empty-region distance was computed along the incident direction.
+                    next_sample = 0.
                 previous_medium = medium
 
             if next_sample > end and ti.static(not self._refractive):
@@ -575,21 +541,25 @@ class SparseSmokeScene(_OrbitScene):
                 # Only skip space empty for the whole centered-difference stencil.
                 gradient, next_optical_sample = self._ior_gradient(origin, direction, t)
                 next_sample = ti.min(next_sample, next_optical_sample)
+                point = origin + direction * t
+                if (point < lower + 1.).any() or (point >= upper - 1.).any():
+                    gradient = ti.Vector.zero(ti.f32, 3)
                 bent, stop = refract_from_gradient(direction,medium,gradient,self._step)
                 if stop:
                     break
                 if (bent != direction).any():
                     origin += direction*t
                     direction = bent
-                    entry, end = self._volume_interval(origin,direction,padding)
+                    entry, end = self._volume_interval(origin, direction)
                     previous_steps += index
                     index = 1.
                     continue
             if ti.static(self._interface):
-                advance = self._step
+                steps = 1.
                 if not has_brick:
-                    advance = ti.max(advance, next_sample + .003)
-                origin += direction * advance
+                    steps = self._advance(0., next_sample, self._step)
+                origin += direction * (steps * self._step)
+                previous_steps += steps - 1.
             else:
                 if next_sample > end:
                     break

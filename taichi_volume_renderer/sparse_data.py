@@ -7,7 +7,7 @@ import numpy as np
 
 @dataclass
 class Entity:
-    """An entity-local volume with a world transform and a range of sector rows."""
+    """An entity-local volume with a transform into Z-up world coordinates."""
 
     position: np.ndarray
     rotation: np.ndarray

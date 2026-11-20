@@ -103,7 +103,7 @@ def _decode_sector(compressed):
 
 
 def load_cxw(path):
-    """Load a packed-color CXW v7/v8 file. Taichi need not be initialized."""
+    """Load a packed-color CXW v7/v8 file into Z-up world coordinates."""
     entities, sectors, tables, chunks = [], [], [], []
     brick_count = 0
     with open(path, "rb") as file:
@@ -121,14 +121,16 @@ def load_cxw(path):
             position = np.array(pose[:3], dtype=np.float64)
             if not np.all(np.isfinite(position)):
                 raise ValueError("Invalid CXW player position")
-            player_pose = (position, _rotation(pose[3:]))
+            player_pose = (position[[0, 2, 1]], _rotation(pose[3:])[[0, 2, 1]])
 
         records = read(table_offset + 33, ENTITY.size * entity_count)
         for record in ENTITY.iter_unpack(records):
             position = np.array(record[1:4], dtype=np.float64)
             if not np.all(np.isfinite(position)):
                 raise ValueError("Invalid CXW entity position")
-            rotation = _rotation(record[4:8])
+            # Change the world axes while preserving entity-local brick coordinates.
+            position = position[[0, 2, 1]]
+            rotation = _rotation(record[4:8])[[0, 2, 1]]
             index_offset, sector_count = record[-2:]
             index = sorted(struct.iter_unpack("<3iQI", read(index_offset, sector_count * 24)))
             first = len(sectors)

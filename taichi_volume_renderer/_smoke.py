@@ -4,6 +4,24 @@ import numpy as np
 import taichi as ti
 
 
+REFRACTIVE_MAX_STEPS = 10000
+INTERFACE_ENTRY_OFFSET = .004
+
+
+@ti.func
+def intersect_box(origin, direction, lower, upper, start, end):
+    for axis in ti.static(range(3)):
+        if direction[axis] == 0:
+            if origin[axis] < lower[axis] or origin[axis] >= upper[axis]:
+                end = -1.0
+        else:
+            lo = (lower[axis] - origin[axis]) / direction[axis]
+            hi = (upper[axis] - origin[axis]) / direction[axis]
+            start = ti.max(start, ti.min(lo, hi))
+            end = ti.min(end, ti.max(lo, hi))
+    return start, end
+
+
 def validate_gamma(gamma):
     if not np.isfinite(gamma) or gamma <= 0:
         raise ValueError("gamma must be finite and positive")
@@ -90,50 +108,28 @@ def refract_at_interface(direction, normal, before, after):
 
 
 @ti.func
-def follow_refractive_interface(
-        incident_pos, transmitted_pos, direction, before, after, voxel_size, sample_ior: ti.template()):
-    # Bracket the change in medium and keep each point on its own side.
-    lo, hi = incident_pos, transmitted_pos
-    for iteration in range(8):
-        middle = (lo + hi) * .5
-        if sample_ior(middle) == before:
-            lo = middle
-        else:
-            hi = middle
-    point = (lo + hi) * .5
+def crosses_refractive_interface(before, after, ambient, occupied, interfaces):
+    # A non-refractive volume receives the ray directly.
+    return before != after and (after != ambient or not occupied) and interfaces < 19
+
+
+@ti.func
+def follow_refractive_interface(pos, direction, before, after, step, voxel_size, sample_ior: ti.template()):
+    point = pos - direction * (.5 * step)
     gradient = ti.Vector.zero(ti.f32, 3)
-    for axis in range(3):
+    for sample in range(6):
+        axis = sample // 2
+        wide = sample % 2 != 0
+        radius = 2.576 if wide else 1.12
+        weight = .58 if wide else 1.
         offset = ti.Vector.zero(ti.f32, 3)
-        offset[axis] = voxel_size
-        gradient[axis] = sample_ior(point + offset) - sample_ior(point - offset)
+        offset[axis] = radius * voxel_size
+        gradient[axis] += weight * (sample_ior(point + offset) - sample_ior(point - offset))
     normal = -direction
     if gradient.norm_sqr() > 0.:
         normal = gradient.normalized()
     bent, fresnel, reflected = refract_at_interface(direction, normal, before, after)
-    # The smoothed normal can send the ray back across the discrete voxel face
-    # on the wrong side. Verify the outgoing side before restarting traversal.
-    distance = voxel_size / 64.
-    anchor = lo if reflected else hi
-    expected = before if reflected else after
-    next_pos = anchor + bent * distance
-    if sample_ior(next_pos) != expected:
-        face = ti.Vector.zero(ti.f32, 3)
-        for axis in range(3):
-            across = lo
-            across[axis] = hi[axis]
-            if sample_ior(across) != before and ti.abs(direction[axis]) > ti.abs(direction.dot(face)):
-                face = ti.Vector.zero(ti.f32, 3)
-                face[axis] = 1.
-        if face.norm_sqr() > 0.:
-            bent, fresnel, reflected = refract_at_interface(direction, face, before, after)
-            anchor = lo if reflected else hi
-            expected = before if reflected else after
-        next_pos = anchor + bent * distance
-        if sample_ior(next_pos) != expected:
-            # At a corner there may be no single separating axis. Continue
-            # along the verified incident segment on the required side.
-            bent = -direction if reflected else direction
-            next_pos = anchor + bent * distance
-            if sample_ior(next_pos) != expected:
-                next_pos = anchor
-    return next_pos, bent, fresnel, reflected
+    if reflected:
+        pos -= direction * step
+        pos += bent * (.35 * step)
+    return pos, bent, fresnel, reflected

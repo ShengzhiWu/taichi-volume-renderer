@@ -5,16 +5,16 @@ from time import perf_counter
 import numpy as np
 import taichi as ti
 
-from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
-                     follow_refractive_interface, refract_from_gradient,
-                     directional_light_parameters, light_cache_channels, validate_gamma)
+from ._smoke import (INTERFACE_ENTRY_OFFSET, REFRACTIVE_MAX_STEPS, ambient_light_parameters, apply_rgb_gamma,
+                     composite_sample, crosses_refractive_interface, directional_light_parameters,
+                     follow_refractive_interface, intersect_box, light_cache_channels,
+                     refract_from_gradient, validate_gamma)
 from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 
 __version__ = "1.6.0"
 
 class _OrbitScene:
-    def __init__(self, background, y_up=False):
-        self._y_up = y_up
+    def __init__(self, background):
         self._scale = self._navigation_unit = 1.0
         self._target = ti.Vector.field(3, dtype=ti.f32, shape=())
         # Camera
@@ -37,8 +37,6 @@ class _OrbitScene:
         def render(pixels: pixel_type):
             world_up = ti.Vector([0., 0., 1.])
             horizontal_axis = ti.Vector([0., 1., 0.])
-            if ti.static(self._y_up):
-                world_up, horizontal_axis = horizontal_axis, world_up
             cos_phi, sin_phi = ti.cos(self._camera_phi[None]), ti.sin(self._camera_phi[None])
             cos_theta, sin_theta = ti.cos(self._camera_theta[None]), ti.sin(self._camera_theta[None])
             horizontal = ti.Vector([cos_phi, 0., 0.]) + sin_phi * horizontal_axis
@@ -102,20 +100,18 @@ class _OrbitScene:
 
 
     def _pose_axes(self, vector):
-        # Clipboard poses use Y-up voxel coordinates for both renderers.
-        return vector if self._y_up else vector[[0, 2, 1]]
+        # Preserve the Y-up clipboard format at the serialization boundary.
+        return vector[[0, 2, 1]]
 
     def _camera_axes(self):
         phi = self.get_camera_phi(degrees=False)
         theta = self.get_camera_theta(degrees=False)
         backward = np.array([np.cos(phi) * np.cos(theta), np.sin(phi) * np.cos(theta), np.sin(theta)])
         right = np.array([-np.sin(phi), np.cos(phi), 0.0])
-        if self._y_up:
-            backward, right = backward[[0, 2, 1]], right[[0, 2, 1]]
         return backward, right
 
     def _set_camera_direction(self, backward):
-        x, y, z = backward[[0, 2, 1]] if self._y_up else backward
+        x, y, z = backward
         horizontal = np.hypot(x, y)
         self.set_camera_phi(np.arctan2(y, x) if horizontal else 0.0, degrees=False)
         self.set_camera_theta(np.arctan2(z, horizontal), degrees=False)
@@ -167,7 +163,7 @@ class _OrbitScene:
     def move_camera(self, forward, right, up):
         """Translate the camera by distances in voxel units."""
         backward_axis, right_axis = self._camera_axes()
-        offset = -forward * backward_axis + right * right_axis + self._pose_axes(np.array([0.0, up, 0.0]))
+        offset = -forward * backward_axis + right * right_axis + np.array([0.0, 0.0, up])
         self._target[None] = self._target[None].to_numpy() + offset * self._navigation_unit
 
     def turn_camera(self, delta_phi, delta_theta):
@@ -197,7 +193,7 @@ class Scene(_OrbitScene):
         smoke_density_factor=1.,
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
-        ray_tracing_max_steps=10000,
+        ray_tracing_max_steps=None,
         *, gamma=1.0, directional_light=None, ambient_light=(0.0, 0.0, 0.0),
         refraction_mode="interface",
     ):
@@ -246,6 +242,10 @@ class Scene(_OrbitScene):
         has_ior = self.index_of_refraction is not None
         use_interface = has_ior and refraction_mode == "interface"
         use_gradient = has_ior and refraction_mode == "gradient"
+        if ray_tracing_max_steps is None and has_ior:
+            ray_tracing_max_steps = REFRACTIVE_MAX_STEPS
+        limit_steps = ray_tracing_max_steps is not None
+        step_limit = ray_tracing_max_steps if limit_steps else 0
         if has_ior and self.index_of_refraction.shape != grid_shape:
             raise ValueError("The IOR field must have the same shape as the density field")
         grid_size = max(grid_shape)
@@ -324,11 +324,18 @@ class Scene(_OrbitScene):
             return color
 
         @ti.func
-        def ior_at(pos):
+        def interface_sample(pos):
             voxel = ti.cast(ti.floor((pos + ti.Vector(half_extent)) * grid_size), ti.i32)
             index = 1.
+            occupied = False
             if (voxel >= 0).all() and (voxel < ti.Vector(grid_shape)).all():
                 index = self.index_of_refraction[voxel]
+                occupied = self._smoke_density_factor[None] * self.smoke_density[voxel] != 0.
+            return index, occupied
+
+        @ti.func
+        def ior_at(pos):
+            index, _ = interface_sample(pos)
             return index
 
         @ti.func
@@ -363,38 +370,51 @@ class Scene(_OrbitScene):
             pos = self._target[None] + pos
             pixels_color = ti.Vector([0., 0., 0.])
             transmittance = 1.
-            distance_to_sphere = pos.norm() - 0.866025  # Radius of the sphere enclosing the volume.
-            if distance_to_sphere > 0:
-                pos += d * distance_to_sphere
-            previous_pos = pos
             previous_ior = 1.
-            padding = 0.
+            interfaces = 0
+            i = step_limit
+            half = ti.Vector(half_extent)
             if ti.static(use_interface):
-                previous_ior = ior_at(pos)
-                padding = self._step_length[None]
-            i = ray_tracing_max_steps
-            while i > 0:
-                if past_volume(pos, d, padding):
-                    break
+                entry, end = intersect_box(pos, d, -half, half, 0., 1e30)
+                if entry >= end:
+                    i = 0
+                pos += d * (entry + INTERFACE_ENTRY_OFFSET * pixel_size)
+            else:
+                distance_to_sphere = pos.norm() - 0.866025  # Radius of the sphere enclosing the volume.
+                if distance_to_sphere > 0:
+                    pos += d * distance_to_sphere
+            while True:
+                if ti.static(limit_steps):
+                    if i <= 0:
+                        break
+                    i -= 1
                 if transmittance < self._stop_threshold[None]:
                     break
 
                 if ti.static(use_interface):
-                    ior = ior_at(pos)
-                    if ior != previous_ior:
+                    if (pos < -half).any() or (pos >= half).any():
+                        break
+                    ior, occupied = interface_sample(pos)
+                    if crosses_refractive_interface(previous_ior, ior, 1., occupied, interfaces):
                         pos, d, fresnel, reflected = follow_refractive_interface(
-                            previous_pos, pos, d, previous_ior, ior, pixel_size, ior_at,
+                            pos, d, previous_ior, ior, self._step_length[None], pixel_size, ior_at,
                         )
-                        if not reflected:
-                            pixels_color += transmittance * fresnel * self._background[None]
-                            transmittance *= 1. - fresnel
-                            previous_ior = ior
-                    previous_pos = pos
+                        interfaces += 1
+                        if reflected:
+                            continue
+                        pixels_color += transmittance * fresnel * self._background[None]
+                        transmittance *= 1. - fresnel
+                    previous_ior = ior
+                else:
+                    if past_volume(pos, d, 0.):
+                        break
+                previous_pos = pos
                 pos, d, pixels_color, transmittance, to_break = self.ray_tracing_one_step(pos, d, pixels_color, transmittance)
                 if to_break:
                     break
-
-                i -= 1
+                if ti.static(not limit_steps):
+                    if not ((pos - previous_pos).dot(d) > 0.):
+                        break
             
             pixels_color += self._background[None] * transmittance
             return pixels_color
@@ -451,7 +471,7 @@ class DisplayWindow():
         smoke_density_factor=1.,
         ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
-        ray_tracing_max_steps=10000,
+        ray_tracing_max_steps=None,
         *, gamma=1.0, directional_light=None, ambient_light=(0.0, 0.0, 0.0),
         refraction_mode="interface",
     ):
@@ -707,7 +727,7 @@ def plot_volume(
     smoke_density_factor=1.,
     ray_tracing_step_size_factor=1.,  # The smaller the value here, the higher the ray tracing quality.
     light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
-    ray_tracing_max_steps=10000,  # This only takes effect in scenes where light rays may bend, such as those containing refractive materials.
+    ray_tracing_max_steps=None,
     camera_phi=0,
     camera_theta=0,
     camera_distance=3,

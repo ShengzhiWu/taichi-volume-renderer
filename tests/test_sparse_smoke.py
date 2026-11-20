@@ -115,8 +115,8 @@ class SparseSmokeTest(unittest.TestCase):
                     table[0, x // 8 + (y // 8) * 16] = brick
                     index = x % 8 + (y % 8) * 8 + z * 64
                     blocks[brick, index] = 0xfc00 if x < 16 else 0x83e0
-                    dense_density[x, z + 12, y + 8] = density * extent.max()
-                    dense_color[x, z + 12, y + 8] = [1, 0, 0] if x < 16 else [0, 1, 0]
+                    dense_density[x, y + 8, z + 12] = density * extent.max()
+                    dense_color[x, y + 8, z + 12] = [1, 0, 0] if x < 16 else [0, 1, 0]
         entity = Entity(np.zeros(3), np.eye(3), 0, 1, np.zeros(3, dtype=np.int64), extent)
         data = SparseVolumeData([entity], np.zeros((1, 3), dtype=np.int32), table, blocks, None)
         for storage, intensity in (("indexed", None), ("direct", np.array([[35, 50, 65]], dtype=np.float32))):

@@ -33,7 +33,7 @@ def main():
                         help="Enable refraction for packed CXW water (palette ID 3)")
     parser.add_argument("--step", type=float, default=1.0, help="Camera ray step in voxel units")
     parser.add_argument("--max-steps", type=int,
-                        help="Camera ray step limit (default: 4600 for interface, 10000 for gradient)")
+                        help="Camera ray step limit (default: 10000 with refraction, unlimited otherwise)")
     lighting = parser.add_mutually_exclusive_group()
     lighting.add_argument("--lighting", dest="lighting", action="store_true", help="Enable lighting (default)")
     lighting.add_argument("--no-lighting", dest="lighting", action="store_false", help="Use uniform lighting")
@@ -64,7 +64,7 @@ def main():
             grid_name=args.grid, step_length=args.step, max_steps=args.max_steps,
             lighting=args.lighting, ambient_light=args.ambient_light,
             # Match a point light of intensity 200 at a distance of 5 from the scene center.
-            directional_light=((0, 1, 0), (8, 8, 8)) if args.light_type == "directional" else None,
+            directional_light=((0, 0, 1), (8, 8, 8)) if args.light_type == "directional" else None,
             **optics,
         )
     except (ValueError, ImportError, OSError) as exc:

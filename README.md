@@ -19,6 +19,8 @@ pip install taichi-volume-renderer
 
 Use WASD to move, Q/E to descend or ascend, Shift to move faster, and R to restore the opening view. In the dense viewer, Tab switches between orbit and first-person controls. In the Windows Tk viewer, right-click to copy or paste a camera pose as JSON.
 
+Both renderers use Z-up world coordinates. The CXW reader converts Y-up entity transforms and the saved player pose at import. Brick indices stay in entity-local coordinates. Clipboard pose JSON keeps its existing Y-up convention in both viewers.
+
 The Windows viewer defaults to a resizable 1280×720 viewport with a fixed long-edge field of view. Pass `resize=False` to `DisplayWindow.show()` to keep a fixed resolution, or `resize=True` to use resizable Taichi ndarrays with an image-processing callback. Callbacks receive the original Taichi field by default.
 
 Dense volumes use one scale for all three axes, so their displayed proportions follow the array dimensions. Dense `Scene`, `DisplayWindow`, and `plot_volume` accept `gamma`, `ambient_light`, and `directional_light`. For example, use `directional_light=((0, 0, 1), (8, 8, 8))` for overhead white light in the dense renderer's Z-up coordinates. White directional and ambient lights share a single-channel cache. The dense renderer keeps all three cache channels for mutable point lights so their color can change between updates.
@@ -49,7 +51,7 @@ The sparse command-line viewer defaults to Vulkan and GGUI, displaying frames as
 
 The dense and sparse smoke renderers use the same compositing and ray step factors. The sparse renderer uses a single scale for all axes to preserve the world's aspect ratio. It precomputes lighting at occupied voxel centers and reads the result from the brick pool during rendering.
 
-The CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting or `--no-lighting` for uniform illumination. The Python API defaults to point lighting and accepts `directional_light=((0, 1, 0), (8, 8, 8))` to switch. The direction points towards the source in the sparse scene's Y-up coordinates.
+The CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting or `--no-lighting` for uniform illumination. The Python API defaults to point lighting and accepts `directional_light=((0, 0, 1), (8, 8, 8))` to switch. The direction points towards the source in Z-up world coordinates.
 
 With lighting enabled, `--ambient-light R G B` or `ambient_light=(R, G, B)` adds unshadowed light to every occupied voxel during light precomputation. The default is `(0, 0, 0)`.
 
@@ -61,7 +63,7 @@ The sparse viewer accepts `--refraction-mode gradient` for a continuous index fi
 
 The gradient mode reuses the dense renderer's Snell step and ends the ray at total internal reflection. The interface mode uses the IOR on both sides of a sampled boundary and estimates the normal from nearby voxels. Fresnel reflection samples the scene background; total internal reflection continues inside the scene.
 
-Use `--max-steps N` on the command line or `max_steps=N` in Python to set a camera ray step limit. Interface mode defaults to 4,600 iterations and counts each empty-region skip as one iteration. After 19 interface interactions, the ray continues in its current direction. Gradient mode defaults to 10,000 steps and straight rays are unlimited by default. In gradient and straight modes, an explicit limit counts skipped steps through empty space.
+Use `--max-steps N` on the command line or `max_steps=N` in Python to set a sparse camera ray step limit. Both refraction modes default to 10,000 steps. Straight rays have no default step limit. Steps skipped through empty space count toward the limit.
 
 ```python
 from taichi_volume_renderer import DisplayWindow
@@ -127,7 +129,7 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 ### Refraction
 
-Dense and sparse rendering default to `refraction_mode="interface"` when an index of refraction is supplied. Use `refraction_mode="gradient"` for a continuous index field. For dense `DisplayWindow` and `plot_volume`, pass an `index_of_refraction` field with the same shape as the density field.
+Dense and sparse rendering default to `refraction_mode="interface"` when an index of refraction is supplied. Both use the same normal estimate, refraction and total internal reflection rules. After 19 interface interactions, the ray continues in its current direction. Use `refraction_mode="gradient"` for a continuous index field. For dense `DisplayWindow` and `plot_volume`, pass an `index_of_refraction` field with the same shape as the density field. Both refraction modes default to 10,000 ray steps. Straight rays have no default step limit. Use `ray_tracing_max_steps=N` to set the dense step limit explicitly.
 
 The examples pictured below explicitly use `refraction_mode="gradient"` to reproduce the illustrated continuous-gradient behavior. Run the glass ball with `python -m examples.refraction`, the fluid example with `python -m examples.pbf3d`, or the mirage with `python -m examples.mirage`.
 
