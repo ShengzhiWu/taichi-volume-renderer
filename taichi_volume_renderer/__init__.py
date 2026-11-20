@@ -17,8 +17,6 @@ class _OrbitScene:
         self._y_up = y_up
         self._scale = self._navigation_unit = 1.0
         self._target = ti.Vector.field(3, dtype=ti.f32, shape=())
-        self._view_basis = ti.Matrix.field(3, 3, dtype=ti.f32, shape=())
-        self._view_basis[None] = np.eye(3, dtype=np.float32)
         # Camera
         self._fov = ti.field(dtype=ti.f32, shape=())
         self._fov[None] = 0.5924  # 2 * tan(vertical field of view / 2)
@@ -37,21 +35,16 @@ class _OrbitScene:
             long_edge_fov = self._long_edge_fov
         @ti.kernel
         def render(pixels: pixel_type):
-            camera_pos = self._camera_distance[None] * ti.Vector([
-                ti.cos(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
-                ti.sin(self._camera_phi[None]) * ti.cos(self._camera_theta[None]),
-                ti.sin(self._camera_theta[None])
-            ])
-            camera_u_vector = ti.Vector([
-                -ti.sin(self._camera_phi[None]),
-                ti.cos(self._camera_phi[None]),
-                0
-            ])
-            camera_v_vector = ti.Vector([
-                -ti.cos(self._camera_phi[None]) * ti.sin(self._camera_theta[None]),
-                -ti.sin(self._camera_phi[None]) * ti.sin(self._camera_theta[None]),
-                ti.cos(self._camera_theta[None])
-            ])
+            world_up = ti.Vector([0., 0., 1.])
+            horizontal_axis = ti.Vector([0., 1., 0.])
+            if ti.static(self._y_up):
+                world_up, horizontal_axis = horizontal_axis, world_up
+            cos_phi, sin_phi = ti.cos(self._camera_phi[None]), ti.sin(self._camera_phi[None])
+            cos_theta, sin_theta = ti.cos(self._camera_theta[None]), ti.sin(self._camera_theta[None])
+            horizontal = ti.Vector([cos_phi, 0., 0.]) + sin_phi * horizontal_axis
+            camera_pos = self._camera_distance[None] * (cos_theta * horizontal + sin_theta * world_up)
+            camera_u_vector = ti.Vector([-sin_phi, 0., 0.]) + cos_phi * horizontal_axis
+            camera_v_vector = cos_theta * world_up - sin_theta * horizontal
             camera_direction = -camera_pos / self._camera_distance[None]
 
             width, height = pixels.shape[0], pixels.shape[1]
@@ -115,10 +108,17 @@ class _OrbitScene:
     def _camera_axes(self):
         phi = self.get_camera_phi(degrees=False)
         theta = self.get_camera_theta(degrees=False)
-        basis = self._view_basis[None].to_numpy()
-        backward = basis @ [np.cos(phi) * np.cos(theta), np.sin(phi) * np.cos(theta), np.sin(theta)]
-        right = basis @ [-np.sin(phi), np.cos(phi), 0.0]
+        backward = np.array([np.cos(phi) * np.cos(theta), np.sin(phi) * np.cos(theta), np.sin(theta)])
+        right = np.array([-np.sin(phi), np.cos(phi), 0.0])
+        if self._y_up:
+            backward, right = backward[[0, 2, 1]], right[[0, 2, 1]]
         return backward, right
+
+    def _set_camera_direction(self, backward):
+        x, y, z = backward[[0, 2, 1]] if self._y_up else backward
+        horizontal = np.hypot(x, y)
+        self.set_camera_phi(np.arctan2(y, x) if horizontal else 0.0, degrees=False)
+        self.set_camera_theta(np.arctan2(z, horizontal), degrees=False)
 
     def get_camera_pose(self):
         """Return the world position, XYZW rotation, and orbit distance in voxel units."""
@@ -136,7 +136,7 @@ class _OrbitScene:
         }
 
     def set_camera_pose(self, pose):
-        """Restore a camera pose in Y-up voxel coordinates."""
+        """Restore position and view direction from a Y-up voxel pose."""
         if not isinstance(pose, dict) or "position" not in pose or "rotation" not in pose:
             raise ValueError("Expected a camera position and rotation")
         position = np.asarray(pose["position"], dtype=np.float64)
@@ -158,11 +158,9 @@ class _OrbitScene:
                 or not np.finfo(np.float32).tiny <= camera_distance <= limit):
             raise ValueError("Camera pose is outside the supported range")
 
-        self._view_basis[None] = np.column_stack((-forward, self._pose_axes(rotation[:, 0]), self._pose_axes(rotation[:, 1])))
         self._target[None] = target
         self.camera_distance = camera_distance
-        self.set_camera_phi(0)
-        self.set_camera_theta(0)
+        self._set_camera_direction(-forward)
 
     def move_camera(self, forward, right, up):
         """Translate the camera by distances in voxel units."""
@@ -173,11 +171,15 @@ class _OrbitScene:
     def turn_camera(self, delta_phi, delta_theta):
         """Change the view direction while keeping the camera in place."""
         backward, _ = self._camera_axes()
-        self.set_camera_phi(self.get_camera_phi() + delta_phi)
-        self.set_camera_theta(self.get_camera_theta() + delta_theta)
+        self.orbit_camera(delta_phi, delta_theta)
         new_backward, _ = self._camera_axes()
         offset = (backward - new_backward) * self.camera_distance * self._scale
         self._target[None] = self._target[None].to_numpy() + offset
+
+    def orbit_camera(self, delta_phi, delta_theta):
+        """Rotate around the target using the fixed world up axis."""
+        self.set_camera_phi(self.get_camera_phi() + delta_phi)
+        self.set_camera_theta(self.get_camera_theta() + delta_theta)
 
 class Scene(_OrbitScene):
     def __init__(
@@ -356,9 +358,7 @@ class Scene(_OrbitScene):
 
         @ti.func
         def ray_tracing(pos, d):
-            basis = self._view_basis[None]
-            pos = self._target[None] + basis @ pos
-            d = basis @ d
+            pos = self._target[None] + pos
             pixels_color = ti.Vector([0., 0., 0.])
             transmittance = 1.
             distance_to_sphere = pos.norm() - 0.866025  # Radius of the sphere enclosing the volume.
@@ -540,8 +540,7 @@ class DisplayWindow():
         if self.fly:
             self.scene.turn_camera(delta_phi, delta_theta)
         else:
-            self.scene.set_camera_phi(self.scene.get_camera_phi() + delta_phi)
-            self.scene.set_camera_theta(self.scene.get_camera_theta() + delta_theta)
+            self.scene.orbit_camera(delta_phi, delta_theta)
 
     def mouse_wheel_event(self, delta):
         if self.fly:

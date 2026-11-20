@@ -39,7 +39,6 @@ class SparseSmokeTest(unittest.TestCase):
                 scene = SparseSmokeScene(data, density=0.25, step_length=0.5,
                                          lighting=False, background=(0, 0, 1), **options)
                 scene._target[None] = [-1.5, 0.5, 0.5]
-                scene._view_basis[None] = np.eye(3, dtype=np.float32)
                 output = ti.Vector.field(3, dtype=ti.f32, shape=2)
 
                 @ti.kernel
@@ -70,7 +69,6 @@ class SparseSmokeTest(unittest.TestCase):
                                                       background=(0, 0, 0), storage=storage)
                 self.assertEqual(scene._direct, storage == "auto")
                 scene._target[None] = [0.5, 0.5, 0.5]
-                scene._view_basis[None] = np.eye(3, dtype=np.float32)
                 output = ti.Vector.field(3, dtype=ti.f32, shape=())
 
                 @ti.kernel

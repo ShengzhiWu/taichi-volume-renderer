@@ -180,7 +180,6 @@ class SparseSmokeScene(_OrbitScene):
     def set_view(self, camera):
         """Reset to the overview or to the saved player view, when provided."""
         if camera == "overview":
-            self._view_basis[None] = ti.Matrix([[1., 0., 0.], [0., 0., 1.], [0., 1., 0.]])
             self._target[None] = self._center
             self.camera_distance = 3
             self.set_camera_phi(0)
@@ -188,11 +187,9 @@ class SparseSmokeScene(_OrbitScene):
         elif camera == "saved" and self._saved_camera_pose is not None:
             position, rotation = self._saved_camera_pose
             forward = rotation[:, 2]
-            self._view_basis[None] = np.column_stack((-forward, rotation[:, 0], rotation[:, 1]))
             self.camera_distance = 64.0 / self._scale
             self._target[None] = position + 64.0 * forward
-            self.set_camera_phi(0)
-            self.set_camera_theta(0)
+            self._set_camera_direction(-forward)
         else:
             raise ValueError("Expected 'overview' or an available 'saved' camera pose")
 
@@ -495,9 +492,7 @@ class SparseSmokeScene(_OrbitScene):
 
     @ti.func
     def ray_tracing(self, pos, direction):
-        basis = self._view_basis[None]
-        origin = self._target[None] + basis @ (pos * self._scale)
-        direction = basis @ direction
+        origin = self._target[None] + pos * self._scale
         if ti.static(not self._interface):
             origin += direction * (ti.max(0.0, (origin - self._world_center[None]).norm() / self._scale - 0.866025) * self._scale)
         color = ti.Vector.zero(ti.f32, 3)
