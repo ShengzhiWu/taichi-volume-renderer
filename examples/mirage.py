@@ -42,6 +42,7 @@ taichi_volume_renderer.plot_volume(
     smoke_density=smoke_density_numpy,
     smoke_color=smoke_color_numpy,
     index_of_refraction=index_of_refraction_numpy,
+    refraction_mode="gradient",
     point_lights_pos=point_lights_pos_numpy,
     point_lights_intensity=point_lights_intensity_numpy,
     resolution=(720, 720),

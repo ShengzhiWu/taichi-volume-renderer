@@ -6,6 +6,7 @@ import numpy as np
 import taichi as ti
 
 from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
+                     follow_refractive_interface, refract_from_gradient,
                      directional_light_parameters, light_cache_channels, validate_gamma)
 from .math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 
@@ -194,7 +195,10 @@ class Scene(_OrbitScene):
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
         ray_tracing_max_steps=10000,
         *, gamma=1.0, directional_light=None, ambient_light=(0.0, 0.0, 0.0),
+        refraction_mode="interface",
     ):
+        if refraction_mode not in ("gradient", "interface"):
+            raise ValueError("refraction_mode must be 'gradient' or 'interface'")
         validate_gamma(gamma)
         ambient = tuple(ambient_light_parameters(ambient_light))
         light_direction = light_intensity = None
@@ -235,14 +239,19 @@ class Scene(_OrbitScene):
         # Ray tracing
         self._step_length = ti.field(dtype=ti.f32, shape=())
         grid_shape = smoke_density_taichi.shape
+        has_ior = self.index_of_refraction is not None
+        use_interface = has_ior and refraction_mode == "interface"
+        use_gradient = has_ior and refraction_mode == "gradient"
+        if has_ior and self.index_of_refraction.shape != grid_shape:
+            raise ValueError("The IOR field must have the same shape as the density field")
         grid_size = max(grid_shape)
         pixel_size = 1 / grid_size
         self._navigation_unit = pixel_size
         half_extent = tuple(n * pixel_size / 2 for n in grid_shape)
 
         @ti.func
-        def past_volume(pos, direction):
-            half = ti.Vector(half_extent)
+        def past_volume(pos, direction, padding):
+            half = ti.Vector(half_extent) + padding
             return ((pos > half) & (direction > 0)).any() or ((pos < -half) & (direction < 0)).any()
         self._step_length[None] = pixel_size * ray_tracing_step_size_factor
         self._step_length_light = ti.field(dtype=ti.f32, shape=())
@@ -269,7 +278,7 @@ class Scene(_OrbitScene):
             @ti.func
             def light_transmittance(pos, direction):
                 transmittance = 1.0
-                while not past_volume(pos, direction):
+                while not past_volume(pos, direction, 0.):
                     mapped = (pos + ti.Vector(half_extent)) * grid_size
                     voxel = ti.cast(mapped, ti.i32)
                     if (voxel >= 0).all() and (voxel < ti.Vector(grid_shape)).all():
@@ -310,65 +319,40 @@ class Scene(_OrbitScene):
                 color = ti.pow(ti.max(color, 0.0), gamma)
             return color
 
-        if self.index_of_refraction is None:
-            @ti.func
-            def ray_tracing_one_step(pos, d, pixels_color, transmittance):
-                pos_maped = (pos + ti.Vector(half_extent)) * grid_size
-                x_int = int(pos_maped.x)
-                y_int = int(pos_maped.y)
-                z_int = int(pos_maped.z)
-                if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
-                    opacity = self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
-                    pixels_color, transmittance = composite_sample(
-                        pixels_color, transmittance, color_at(x_int, y_int, z_int),
-                        light_at(x_int, y_int, z_int), opacity,
-                    )
-                pos += d * self._step_length[None]
-                return pos, d, pixels_color, transmittance, False
-            self.ray_tracing_one_step = ray_tracing_one_step
-        else:
-            @ti.func
-            def ray_tracing_one_step(pos, d, pixels_color, transmittance):
-                pos_maped = (pos + ti.Vector(half_extent)) * grid_size
-                x_int = int(pos_maped.x)
-                y_int = int(pos_maped.y)
-                z_int = int(pos_maped.z)
-                to_break = False
-                if x_int >= 0 and x_int < self.smoke_density.shape[0] and y_int >= 0 and y_int < self.smoke_density.shape[1] and z_int >= 0 and z_int < self.smoke_density.shape[2]:
-                    opacity = self._smoke_density_factor[None] * self.smoke_density[x_int, y_int, z_int] * self._step_length[None]
-                    pixels_color, transmittance = composite_sample(
-                        pixels_color, transmittance, color_at(x_int, y_int, z_int),
-                        light_at(x_int, y_int, z_int), opacity,
-                    )
+        @ti.func
+        def ior_at(pos):
+            voxel = ti.cast(ti.floor((pos + ti.Vector(half_extent)) * grid_size), ti.i32)
+            index = 1.
+            if (voxel >= 0).all() and (voxel < ti.Vector(grid_shape)).all():
+                index = self.index_of_refraction[voxel]
+            return index
 
-                    if x_int >= 1 and x_int < self.smoke_density.shape[0] - 1 and y_int >= 1 and y_int < self.smoke_density.shape[1] - 1 and z_int >= 1 and z_int < self.smoke_density.shape[2] - 1:
-                        index_of_refraction = self.index_of_refraction[x_int, y_int, z_int]
-                        index_of_refraction_grad = ti.Vector([
-                            (self.index_of_refraction[x_int + 1, y_int, z_int] - self.index_of_refraction[x_int - 1, y_int, z_int]),
-                            (self.index_of_refraction[x_int, y_int + 1, z_int] - self.index_of_refraction[x_int, y_int - 1, z_int]),
-                            (self.index_of_refraction[x_int, y_int, z_int + 1] - self.index_of_refraction[x_int, y_int, z_int - 1])
+        @ti.func
+        def ray_tracing_one_step(pos, d, pixels_color, transmittance):
+            mapped = (pos + ti.Vector(half_extent)) * grid_size
+            if ti.static(use_interface):
+                mapped = ti.floor(mapped)
+            voxel = ti.cast(mapped, ti.i32)
+            to_break = False
+            if (voxel >= 0).all() and (voxel < ti.Vector(grid_shape)).all():
+                x, y, z = voxel
+                step = self._step_length[None]
+                opacity = self._smoke_density_factor[None] * self.smoke_density[voxel] * step
+                pixels_color, transmittance = composite_sample(
+                    pixels_color, transmittance, color_at(x, y, z), light_at(x, y, z), opacity,
+                )
+                if ti.static(use_gradient):
+                    if (voxel >= 1).all() and (voxel < ti.Vector(grid_shape) - 1).all():
+                        indices = ti.static(self.index_of_refraction)
+                        gradient = ti.Vector([
+                            indices[x+1, y, z] - indices[x-1, y, z],
+                            indices[x, y+1, z] - indices[x, y-1, z],
+                            indices[x, y, z+1] - indices[x, y, z-1],
                         ]) / (pixel_size * 2.)
-                        index_of_refraction_change = ti.math.dot(d, index_of_refraction_grad) * self._step_length[None]
-                        if index_of_refraction_change != 0.:
-                            normal = index_of_refraction_grad.normalized()
-                            relative_index_of_refraction = (index_of_refraction + index_of_refraction_change * 0.5) / (index_of_refraction - index_of_refraction_change * 0.5)
-                            d_n = ti.math.dot(d, normal) * normal
-                            d_t = d - d_n
-                            cos_old = ti.abs(ti.math.dot(d, normal))
-                            sin_old = (1 - cos_old ** 2) ** 0.5
-                            sin_new = sin_old / relative_index_of_refraction
-                            if sin_new > 1.:
-                                to_break = True
-                            else:
-                                cos_new = (1 - sin_new ** 2) ** 0.5
-                                d_n *= cos_new / cos_old
-                                d_t *= sin_new / sin_old
-                                d = d_n + d_t
-                                d = d.normalized()
-
-                pos += d * self._step_length[None]
-                return pos, d, pixels_color, transmittance, to_break
-            self.ray_tracing_one_step = ray_tracing_one_step
+                        d, to_break = refract_from_gradient(d, indices[voxel], gradient, step)
+            pos += d * self._step_length[None]
+            return pos, d, pixels_color, transmittance, to_break
+        self.ray_tracing_one_step = ray_tracing_one_step
 
         @ti.func
         def ray_tracing(pos, d):
@@ -380,13 +364,30 @@ class Scene(_OrbitScene):
             distance_to_sphere = pos.norm() - 0.866025  # Radius of the sphere enclosing the volume.
             if distance_to_sphere > 0:
                 pos += d * distance_to_sphere
+            previous_pos = pos
+            previous_ior = 1.
+            padding = 0.
+            if ti.static(use_interface):
+                previous_ior = ior_at(pos)
+                padding = self._step_length[None]
             i = ray_tracing_max_steps
             while i > 0:
-                if past_volume(pos, d):
+                if past_volume(pos, d, padding):
                     break
                 if transmittance < self._stop_threshold[None]:
                     break
 
+                if ti.static(use_interface):
+                    ior = ior_at(pos)
+                    if ior != previous_ior:
+                        pos, d, fresnel, reflected = follow_refractive_interface(
+                            previous_pos, pos, d, previous_ior, ior, pixel_size, ior_at,
+                        )
+                        if not reflected:
+                            pixels_color += transmittance * fresnel * self._background[None]
+                            transmittance *= 1. - fresnel
+                            previous_ior = ior
+                    previous_pos = pos
                 pos, d, pixels_color, transmittance, to_break = self.ray_tracing_one_step(pos, d, pixels_color, transmittance)
                 if to_break:
                     break
@@ -450,6 +451,7 @@ class DisplayWindow():
         light_ray_tracing_step_size_factor=3.,  # The smaller the value here, the higher the shadow quality.
         ray_tracing_max_steps=10000,
         *, gamma=1.0, directional_light=None, ambient_light=(0.0, 0.0, 0.0),
+        refraction_mode="interface",
     ):
         if init_taichi:
             ti.init(arch=taichi_arch)
@@ -486,7 +488,8 @@ class DisplayWindow():
             ray_tracing_step_size_factor=ray_tracing_step_size_factor,
             light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
             ray_tracing_max_steps=ray_tracing_max_steps,
-            gamma=gamma, directional_light=directional_light, ambient_light=ambient_light)
+            gamma=gamma, directional_light=directional_light, ambient_light=ambient_light,
+            refraction_mode=refraction_mode)
 
         self._init_display(resolution)
 
@@ -711,6 +714,7 @@ def plot_volume(
     image_process=None,  # Users can edit the rendering result before it displayed in the window each step by assigning this callback function.
     enable_mouse_rotating=True,
     *, gamma=1.0, directional_light=None, ambient_light=(0.0, 0.0, 0.0),
+    refraction_mode="interface",
 ):
     window = DisplayWindow(
         smoke_density=smoke_density,
@@ -729,6 +733,7 @@ def plot_volume(
         light_ray_tracing_step_size_factor=light_ray_tracing_step_size_factor,
         ray_tracing_max_steps=ray_tracing_max_steps,
         gamma=gamma, directional_light=directional_light, ambient_light=ambient_light,
+        refraction_mode=refraction_mode,
     )
     window.scene.set_camera_phi(camera_phi)
     window.scene.set_camera_theta(camera_theta)

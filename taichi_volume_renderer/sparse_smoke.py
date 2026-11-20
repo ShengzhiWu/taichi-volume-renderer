@@ -9,7 +9,8 @@ from . import _OrbitScene
 from .cxw import load_cxw, packed_color_materials
 from .sparse_data import SparseVolumeData, index_brick_values
 from ._smoke import (ambient_light_parameters, apply_rgb_gamma, composite_sample,
-                     directional_light_parameters, light_cache_channels, validate_gamma)
+                     directional_light_parameters, light_cache_channels,
+                     refract_at_interface, refract_from_gradient, validate_gamma)
 
 
 @ti.func
@@ -63,11 +64,15 @@ class SparseSmokeScene(_OrbitScene):
         lighting=True, point_lights_pos=None, point_lights_intensity=None,
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
+        index_of_refraction=None, refraction_mode="interface",
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
         A directional light is (direction towards the source in Y-up world axes, RGB intensity).
         Ambient light is a constant RGB intensity added at every occupied voxel.
+        index_of_refraction is an optional 65,536-entry lookup table for indexed storage.
+        Entry 0 is the ambient medium, including air outside allocated bricks.
+        refraction_mode selects the dense gradient step or discrete interface optics.
         """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
             if not np.isfinite(value) or value <= 0:
@@ -87,7 +92,12 @@ class SparseSmokeScene(_OrbitScene):
             not isinstance(max_steps, (int, np.integer)) or not 0 < max_steps <= 2**31 - 1
         ):
             raise ValueError("max_steps must be None or a positive 32-bit integer")
-        self._max_steps = 0 if max_steps is None else int(max_steps)
+        if refraction_mode not in ("gradient", "interface"):
+            raise ValueError("refraction_mode must be 'gradient' or 'interface'")
+        self._refractive = index_of_refraction is not None
+        self._interface = self._refractive and refraction_mode == "interface"
+        default_max_steps = 4600 if self._interface else (10000 if self._refractive else 0)
+        self._max_steps = default_max_steps if max_steps is None else int(max_steps)
         super().__init__(background, y_up=True)
         self.entity_count = len(data.entities)
         self.sector_count = len(data.sectors)
@@ -97,6 +107,14 @@ class SparseSmokeScene(_OrbitScene):
         self._sectors.from_numpy(data.sectors)
         self._brick_ids.from_numpy(data.brick_ids)
         self._load_voxels(data.blocks, materials, density, gamma, storage)
+        if self._refractive:
+            if self._direct or data.blocks.dtype != np.uint16:
+                raise ValueError("Refraction requires indexed uint16 material codes")
+            indices = np.asarray(index_of_refraction,dtype=np.float32)
+            if indices.shape != (65536,) or not np.all(np.isfinite(indices) & (indices > 0)):
+                raise ValueError("Expected a positive finite index of refraction for each material code")
+            self._ior = ti.field(ti.f32,shape=65536)
+            self._ior.from_numpy(indices)
 
         self._positions = ti.Vector.field(3, dtype=ti.f32, shape=self.entity_count)
         self._rotations = ti.Matrix.field(3, 3, dtype=ti.f32, shape=self.entity_count)
@@ -385,15 +403,15 @@ class SparseSmokeScene(_OrbitScene):
         return ti.max(1.0, ti.floor((next_sample - t) / step))
 
     @ti.func
-    def _volume_interval(self, origin, direction):
-        half_extent = self._world_extent[None] * 0.5
+    def _volume_interval(self, origin, direction, padding):
+        half_extent = self._world_extent[None] * 0.5 + padding
         center = self._world_center[None]
         return _intersect_box(origin, direction, center - half_extent, center + half_extent, 0.0, 1e30)
 
     @ti.func
     def _light_transmittance(self, origin, direction):
         transmittance, t = 1.0, 0.0
-        _, end = self._volume_interval(origin, direction)
+        _, end = self._volume_interval(origin, direction, 0.)
         while t <= end and transmittance != 0.0:
             density, next_sample = 0.0, 1e30
             for entity in range(self.entity_count):
@@ -409,6 +427,53 @@ class SparseSmokeScene(_OrbitScene):
                 break
             t = next_t
         return transmittance
+
+    @ti.func
+    def _sample_refractive_index(self, origin, direction, t):
+        ambient_ior = self._ior[0]
+        index, next_sample = ambient_ior, 1e30
+        for entity in range(self.entity_count):
+            next_entity, brick, voxel = self._lookup(origin, direction, t, 1e30, entity)
+            next_sample = ti.min(next_sample,next_entity)
+            if index == ambient_ior and brick >= 0:
+                index = self._ior[self._block_code(brick,voxel)]
+        return index, next_sample
+
+    @ti.func
+    def _ior_gradient(self, origin, direction, t):
+        gradient = ti.Vector.zero(ti.f32, 3)
+        next_sample = 1e30
+        for neighbor in range(6):
+            axis = neighbor // 2
+            sign = 1. if neighbor % 2 else -1.
+            offset = ti.Vector.zero(ti.f32, 3)
+            offset[axis] = sign
+            index, next_neighbor = self._sample_refractive_index(origin + offset, direction, t)
+            gradient[axis] += .5 * sign * index
+            next_sample = ti.min(next_sample, next_neighbor)
+        return gradient, next_sample
+
+    @ti.func
+    def _ior_at(self, point):
+        # At t=0 only the material matters; discard the directional skip distance.
+        index, _ = self._sample_refractive_index(point, ti.Vector([1., 1., 1.]), 0.)
+        return index
+
+    @ti.func
+    def _interface_normal(self, point, direction):
+        gradient = ti.Vector.zero(ti.f32, 3)
+        for sample in range(6):
+            axis = sample // 2
+            wide = sample % 2 != 0
+            radius = 2.576 if wide else 1.12
+            weight = .58 if wide else 1.
+            offset = ti.Vector.zero(ti.f32, 3)
+            offset[axis] = radius
+            gradient[axis] += weight * (self._ior_at(point + offset) - self._ior_at(point - offset))
+        normal = -direction
+        if gradient.norm_sqr() > 0.:
+            normal = gradient.normalized()
+        return normal
 
     @ti.func
     def _sample_light(self, voxel_center):
@@ -433,20 +498,43 @@ class SparseSmokeScene(_OrbitScene):
         basis = self._view_basis[None]
         origin = self._target[None] + basis @ (pos * self._scale)
         direction = basis @ direction
-        origin += direction * (ti.max(0.0, (origin - self._world_center[None]).norm() / self._scale - 0.866025) * self._scale)
+        if ti.static(not self._interface):
+            origin += direction * (ti.max(0.0, (origin - self._world_center[None]).norm() / self._scale - 0.866025) * self._scale)
         color = ti.Vector.zero(ti.f32, 3)
         transmittance = 1.0
-        entry, end = self._volume_interval(origin, direction)
+        padding = ti.static(1. if self._refractive and not self._interface else 0.)
+        entry, end = self._volume_interval(origin, direction, padding)
         index = ti.ceil(entry / self._step)
+        previous_steps = 0.
+        previous_medium, interfaces = 1., 0
+        lower, upper = origin, origin
+        if ti.static(self._interface):
+            if entry >= end:
+                end = -1.
+            origin += direction * (entry + .004)
+            index = 0.
+            previous_medium = self._ior[0]
+            half_extent = self._world_extent[None] * .5
+            lower = self._world_center[None] - half_extent
+            upper = self._world_center[None] + half_extent
         while entry <= end and transmittance >= self._stop_threshold:
             if ti.static(self._max_steps > 0):
-                if index >= self._max_steps:
+                if index + previous_steps >= self._max_steps:
                     break
             t = index * self._step
-            if t > end:
-                break
+            if ti.static(self._interface):
+                if (origin < lower).any() or (origin >= upper).any():
+                    break
+                previous_steps += 1.
+            else:
+                if t > end:
+                    break
             density, next_sample = 0.0, 1e30
             lit_color = ti.Vector.zero(ti.f32, 3)
+            medium = 1.
+            has_brick, occupied = False, False
+            if ti.static(self._refractive):
+                medium = self._ior[0]
             for entity in range(self.entity_count):
                 next_entity_sample, brick, voxel = self._lookup(origin, direction, t, 1e30, entity)
                 next_sample = ti.min(next_sample, next_entity_sample)
@@ -455,15 +543,63 @@ class SparseSmokeScene(_OrbitScene):
                     density += material.w
                     if material.w != 0:
                         lit_color += material.xyz * self._cached_light(brick, voxel) * material.w
-            if next_sample > end:
+                    if ti.static(self._refractive):
+                        code = self._block_code(brick, voxel)
+                        if medium == self._ior[0]:
+                            medium = self._ior[code]
+                        if ti.static(self._interface):
+                            has_brick = True
+                            occupied = occupied or code != 0
+
+            if ti.static(self._interface):
+                # A non-refractive voxel receives the ray without an air interface.
+                if medium != previous_medium and (medium != self._ior[0] or not occupied) and interfaces < 19:
+                    normal = self._interface_normal(origin - direction * (.5 * self._step), direction)
+                    bent, fresnel, reflected = refract_at_interface(
+                        direction, normal, previous_medium, medium,
+                    )
+                    interfaces += 1
+                    if reflected:
+                        origin -= direction * self._step
+                        origin += bent * (.35 * self._step)
+                        direction = bent
+                        continue
+                    color += transmittance * fresnel * self._background[None]
+                    transmittance *= 1. - fresnel
+                    direction = bent
+                previous_medium = medium
+
+            if next_sample > end and ti.static(not self._refractive):
                 break
             if density != 0:
                 color, transmittance = composite_sample(
                     color, transmittance, lit_color / density, ti.Vector([1.0, 1.0, 1.0]),
                     density * self._step,
                 )
-            next_index = index + self._advance(t, next_sample, self._step)
-            if next_index <= index:
-                break
-            index = next_index
+            if ti.static(self._refractive and not self._interface):
+                # Only skip space empty for the whole centered-difference stencil.
+                gradient, next_optical_sample = self._ior_gradient(origin, direction, t)
+                next_sample = ti.min(next_sample, next_optical_sample)
+                bent, stop = refract_from_gradient(direction,medium,gradient,self._step)
+                if stop:
+                    break
+                if (bent != direction).any():
+                    origin += direction*t
+                    direction = bent
+                    entry, end = self._volume_interval(origin,direction,padding)
+                    previous_steps += index
+                    index = 1.
+                    continue
+            if ti.static(self._interface):
+                advance = self._step
+                if not has_brick:
+                    advance = ti.max(advance, next_sample + .003)
+                origin += direction * advance
+            else:
+                if next_sample > end:
+                    break
+                next_index = index + self._advance(t, next_sample, self._step)
+                if next_index <= index:
+                    break
+                index = next_index
         return color + self._background[None] * transmittance

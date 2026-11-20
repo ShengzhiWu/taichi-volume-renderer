@@ -57,7 +57,11 @@ For CXW imports, air has zero density and each occupied voxel uses its packed RG
 
 Use `--gamma` on the command line or `gamma=` in `DisplayWindow.from_cxw()` to raise each loaded RGB component to that power. The default is `1.0`. Values below 1 brighten midtone reflectance and values above 1 darken it.
 
-Sparse camera rays march within the scene bounds without a step limit by default. Use `--max-steps N` on the command line or `max_steps=N` in Python to set a limit. Empty space counts toward an explicit limit.
+The sparse viewer accepts `--refraction-mode gradient` for a continuous index field or `--refraction-mode interface` for distinct media. The CLI option supplies air and water (packed CXW palette ID 3) indices and uses a low density for water in both modes. The indexed Python API accepts a 65,536-element `index_of_refraction=` table and a `refraction_mode=` value. The default mode for a supplied table is `interface`; without a table, the renderer traces straight rays.
+
+The gradient mode reuses the dense renderer's Snell step and ends the ray at total internal reflection. The interface mode uses the IOR on both sides of a sampled boundary and estimates the normal from nearby voxels. Fresnel reflection samples the scene background; total internal reflection continues inside the scene.
+
+Use `--max-steps N` on the command line or `max_steps=N` in Python to set a camera ray step limit. Interface mode defaults to 4,600 iterations and counts each empty-region skip as one iteration. After 19 interface interactions, the ray continues in its current direction. Gradient mode defaults to 10,000 steps and straight rays are unlimited by default. In gradient and straight modes, an explicit limit counts skipped steps through empty space.
 
 ```python
 from taichi_volume_renderer import DisplayWindow
@@ -123,7 +127,9 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 ### Refraction
 
-Refractive volume rendering allows visualizing objects with refractive behavior without constructing a mesh. See `examples/refraction.py`, where a glass ball is rendered.
+Dense and sparse rendering default to `refraction_mode="interface"` when an index of refraction is supplied. Use `refraction_mode="gradient"` for a continuous index field. For dense `DisplayWindow` and `plot_volume`, pass an `index_of_refraction` field with the same shape as the density field.
+
+The examples pictured below explicitly use `refraction_mode="gradient"` to reproduce the illustrated continuous-gradient behavior. Run the glass ball with `python -m examples.refraction`, the fluid example with `python -m examples.pbf3d`, or the mirage with `python -m examples.mirage`.
 
 ![refraction](images/refraction.jpg)
 
