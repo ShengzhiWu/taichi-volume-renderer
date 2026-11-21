@@ -12,6 +12,7 @@ from .sparse_data import Entity, SparseVolumeData
 
 ENTITY = struct.Struct("<16s3f4fH B 6f B Q I")
 REGION_HEADER_SIZE = 4096 * 4 + 4
+SECTOR_HEADER = struct.Struct("<4s3I")
 MAX_INFLATED_SECTOR = 1 << 30
 
 
@@ -49,16 +50,34 @@ def _read_at(file, offset, size, file_size):
     return file.read(size)
 
 
-def _decode_sector(compressed):
+def _sector_header(data):
+    magic, capacity, count, free_count = SECTOR_HEADER.unpack_from(data)
+    if magic != b"VXS2" or capacity > 4096 or count + free_count != capacity:
+        raise ValueError("Invalid CXW sector header")
+    return capacity, count, free_count
+
+
+def _count_sector_bricks(read, offset, length):
+    inflate = zlib.decompressobj(-15)
+    header = bytearray()
+    while length and not inflate.eof:
+        chunk_size = min(length, 4096)
+        header.extend(inflate.decompress(read(offset, chunk_size), SECTOR_HEADER.size - len(header)))
+        if len(header) == SECTOR_HEADER.size:
+            return _sector_header(header)[1]
+        offset += chunk_size
+        length -= chunk_size
+    raise ValueError("Truncated CXW sector header")
+
+
+def _decode_sector(compressed, output=None):
     inflate = zlib.decompressobj(-15)
     data = inflate.decompress(compressed, MAX_INFLATED_SECTOR)
     if not inflate.eof or inflate.unused_data or len(data) < 16406:
         raise ValueError("Invalid CXW deflate stream or sector size")
 
-    magic, capacity, count, free_count = struct.unpack_from("<4s3I", data)
-    if magic != b"VXS2" or capacity > 4096 or count + free_count != capacity:
-        raise ValueError("Invalid CXW sector header")
-    indices = np.frombuffer(data, dtype="<i2", count=4096 + free_count, offset=16)
+    capacity, count, free_count = _sector_header(data)
+    indices = np.frombuffer(data, dtype="<i2", count=4096 + free_count, offset=SECTOR_HEADER.size)
     mapped = np.flatnonzero(indices[:4096] != -1)
     ids = indices[mapped]
     if len(mapped) != count or not np.array_equal(
@@ -93,24 +112,36 @@ def _decode_sector(compressed):
     if offset != len(data) or (count and blocks is None):
         raise ValueError("Invalid CXW slot data")
     if not count:
-        return mapped, np.empty((0, 512), dtype=np.uint16)
+        return mapped
 
     active = blocks.reshape(capacity, 512)[ids]
     if np.any((active >= 256) & (active < 0x4000)):
         raise ValueError("Invalid packed-color block code in CXW sector")
     occupied = np.any(active, axis=1)
-    return mapped[occupied], active[occupied].astype(np.uint16, copy=False)
+    mapped = mapped[occupied]
+    if output is not None:
+        if len(mapped) > len(output):
+            raise ValueError("CXW sector grew during loading")
+        output[:len(mapped)] = active[occupied]
+    return mapped
 
 
 def load_cxw(path):
     """Load a packed-color CXW v7/v8 file into Z-up world coordinates."""
-    entities, sectors, tables, chunks = [], [], [], []
-    brick_count = 0
+    entities, sectors, tables = [], [], []
+    entity_payloads = []
+    allocated_bricks = 0
     with open(path, "rb") as file:
         size = os.fstat(file.fileno()).st_size
 
         def read(offset, length):
             return _read_at(file, offset, length, size)
+
+        def decode(coord, offset, length, output=None):
+            try:
+                return _decode_sector(read(offset, length), output)
+            except (zlib.error, ValueError) as exc:
+                raise ValueError(f"Cannot decode CXW sector {coord}: {exc}") from exc
 
         magic, version, flags, table_offset = struct.unpack_from("<4sHHQ", read(0, 64))
         if magic not in (b"CXLS", b"VXLS") or version not in (7, 8) or flags != 1:
@@ -133,7 +164,7 @@ def load_cxw(path):
             rotation = _rotation(record[4:8])[[0, 2, 1]]
             index_offset, sector_count = record[-2:]
             index = sorted(struct.iter_unpack("<3iQI", read(index_offset, sector_count * 24)))
-            first = len(sectors)
+            payloads = []
             previous = None
             for x, y, z, region_offset, region_size in index:
                 coord = (x, y, z)
@@ -145,18 +176,38 @@ def load_cxw(path):
                 compressed_size, = struct.unpack("<I", read(region_offset + REGION_HEADER_SIZE - 4, 4))
                 if region_size != REGION_HEADER_SIZE + compressed_size:
                     raise ValueError(f"Invalid CXW region size for sector {coord}")
+                payload_offset = region_offset + REGION_HEADER_SIZE
                 try:
-                    mapped, blocks = _decode_sector(read(region_offset + REGION_HEADER_SIZE, compressed_size))
+                    count = _count_sector_bricks(read, payload_offset, compressed_size)
                 except (zlib.error, ValueError) as exc:
-                    raise ValueError(f"Cannot decode CXW sector {coord}: {exc}") from exc
-                if not len(blocks):
+                    raise ValueError(f"Cannot read CXW sector {coord}: {exc}") from exc
+                allocated_bricks += count
+                payloads.append((coord, payload_offset, compressed_size, count))
+            entity_payloads.append((position, rotation, payloads))
+
+        # Header counts include allocated air bricks. Compact the occupied bricks as we decode.
+        try:
+            blocks = np.empty((allocated_bricks, 512), dtype=np.uint16)
+        except MemoryError:
+            occupied_bricks = sum(
+                len(decode(coord, offset, length))
+                for _, _, payloads in entity_payloads
+                for coord, offset, length, _ in payloads
+            )
+            blocks = np.empty((occupied_bricks, 512), dtype=np.uint16)
+        brick_count = 0
+        for position, rotation, payloads in entity_payloads:
+            first = len(sectors)
+            for coord, offset, length, count in payloads:
+                mapped = decode(coord, offset, length, blocks[brick_count:brick_count + count])
+                if not len(mapped):
                     continue
                 table = np.full(4096, -1, dtype=np.int32)
-                table[mapped] = np.arange(brick_count, brick_count + len(blocks), dtype=np.int32)
-                brick_count += len(blocks)
+                next_brick = brick_count + len(mapped)
+                table[mapped] = np.arange(brick_count, next_brick, dtype=np.int32)
+                brick_count = next_brick
                 sectors.append(coord)
                 tables.append(table)
-                chunks.append(blocks)
 
             end = len(sectors)
             if first < end:
@@ -167,4 +218,4 @@ def load_cxw(path):
     if not entities:
         raise ValueError("CXW world has no occupied bricks")
     return SparseVolumeData(entities, np.asarray(sectors, dtype=np.int32), np.stack(tables),
-                            np.concatenate(chunks), player_pose)
+                            blocks[:brick_count], player_pose)
