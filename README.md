@@ -127,6 +127,10 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 ![cloud](images/cloud.jpg)
 
+### VXB sparse material format
+
+[VXB v1](docs/vxb-v1.md) specifies a single-file material table, configurable brick levels, uniform bricks, and bit-packed material indices. The [reference codec](taichi_volume_renderer/vxb.py) uses the Python standard library and preserves the brick hierarchy on load.
+
 ### Refraction
 
 Dense and sparse rendering default to `refraction_mode="interface"` when an index of refraction is supplied. Both use the same normal estimate, refraction and total internal reflection rules. After 19 interface interactions, the ray continues in its current direction. Use `refraction_mode="gradient"` for a continuous index field. For dense `DisplayWindow` and `plot_volume`, pass an `index_of_refraction` field with the same shape as the density field. Both refraction modes default to 10,000 ray steps. Straight rays have no default step limit. Use `ray_tracing_max_steps=N` to set the dense step limit explicitly.
