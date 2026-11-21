@@ -31,6 +31,8 @@ Volume rendering provides an impressive capability to display faintly visible ob
 
 The sparse renderer groups 8³ voxel bricks into 128³ sectors and allocates voxel data only for occupied bricks. During ray marching, a missing sector lets the ray skip directly toward that sector's exit. Inside an allocated sector, the ray can skip missing bricks the same way.
 
+A sparse scene can contain multiple entities, each with its own voxel grid, position, and rotation. Ray marching samples each grid in its local coordinates and adds densities where entities overlap. An empty-space jump stops at the earliest next sample across the entities.
+
 We tested the interactive GPU viewer with a scene spanning 4224 × 3840 × 640 voxels. Its bounding box covers over 10 billion voxel positions, with about 726k allocated bricks. Interaction and rendering are real-time (about 40 FPS). Frame rate varies with the hardware, viewport size, and rendering settings.
 
 #### OpenVDB
@@ -41,7 +43,7 @@ OpenVDB (`.vdb`) is a familiar interchange format for sparse volumes. The sparse
 python -m examples.sparse_smoke "path/to/cloud.vdb"
 ```
 
-The importer accepts nonnegative `FloatGrid` densities with zero background and uniform voxel size. It looks for a grid named `density` first. Use `--grid NAME` to select another grid. The [OpenVDB notebook](examples/openvdb.ipynb) shows how to render a grid after expanding it to a dense array.
+The importer loads one nonnegative `FloatGrid` with zero background and uniform voxel size as a single entity and preserves its transform. It looks for a grid named `density` first. Use `--grid NAME` to select another grid. The [OpenVDB notebook](examples/openvdb.ipynb) shows how to render a grid after expanding it to a dense array.
 
 ![cloud](images/cloud.jpg)
 
@@ -49,7 +51,7 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 VDB readers typically rely on the OpenVDB library. A general reader needs to handle several grid types, file versions, and compression options, which makes a standalone decoder more involved. We developed VXB (`.vxb`) so developers can write a decoder for their own language or runtime from a short byte-level specification.
 
-A VXB file describes its material fields and brick hierarchy. The decoder reads three kinds of brick records and inflates each top-level payload with standard Deflate. VXB supports uniform bricks and a choice of indexed or direct material values. The reference codec uses only the Python standard library. See the [VXB format overview](docs/vxb.md) and [VXB v1 binary specification](docs/vxb-v1.md).
+A VXB file stores one Z-up world grid and describes its material fields and brick hierarchy. The decoder reads three kinds of brick records and inflates each top-level payload with standard Deflate. VXB supports uniform bricks and a choice of indexed or direct material values. The reference codec uses only the Python standard library. See the [VXB format overview](docs/vxb.md) and [VXB v1 binary specification](docs/vxb-v1.md).
 
 Open a VXB scene with the sparse viewer.
 
@@ -59,7 +61,7 @@ python -m examples.sparse_smoke "path/to/world.vxb" --camera saved
 
 #### CXW
 
-The sparse viewer imports packed-color CXW (`.cxw`) v7/v8 scenes.
+The sparse viewer imports packed-color CXW (`.cxw`) v7/v8 scenes and preserves their separate entities and transforms.
 
 ```bash
 python -m examples.sparse_smoke "path/to/world.cxw" --camera saved
