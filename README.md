@@ -31,7 +31,7 @@ Volume rendering provides an impressive capability to display faintly visible ob
 
 The sparse renderer groups 8³ voxel bricks into 128³ sectors and allocates voxel data only for occupied bricks. During ray marching, a missing sector lets the ray skip directly toward that sector's exit. Inside an allocated sector, the ray can skip missing bricks the same way.
 
-The interactive GPU viewer has rendered a scene spanning **4224 × 3840 × 640 voxels**. Its bounding box covers over 10 billion voxel positions, with about 726000 allocated bricks. Frame rate varies with the hardware, viewport size, and rendering settings.
+We tested the interactive GPU viewer with a scene spanning 4224 × 3840 × 640 voxels. Its bounding box covers over 10 billion voxel positions, with about 726k allocated bricks. Interaction and rendering are real-time (about 40 FPS). Frame rate varies with the hardware, viewport size, and rendering settings.
 
 #### OpenVDB
 
@@ -45,7 +45,7 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 ![cloud](images/cloud.jpg)
 
-#### VXB
+#### VXB (recommended)
 
 VDB readers typically rely on the OpenVDB library. A general reader needs to handle several grid types, file versions, and compression options, which makes a standalone decoder more involved. We developed VXB (`.vxb`) so developers can write a decoder for their own language or runtime from a short byte-level specification.
 
@@ -81,7 +81,7 @@ python -m scripts.cxw_to_vxb "path/to/world.cxw" "path/to/world.vxb"
 
 The converter preserves occupied voxels, original block codes, packed surface emission, and the saved camera pose. It uses the CXW importer's RGB and density defaults for the renderable material values. CXW previews and auxiliary slots are omitted.
 
-#### Sparse viewer options
+#### Renderer Details
 
 Use `--camera saved` when the file contains a camera pose, or omit it for an overview. Run `python -m examples.sparse_smoke --help` to list all command-line options.
 
@@ -211,8 +211,7 @@ Select a [refraction mode](#refraction) with `refraction_mode="gradient"` or `re
 
 ## TODOs
 
-- Add a direct-value mode to the on-disk sparse volume format for floating-point density and optional RGB.
-- Evaluate 3D DCT and quantization for compressing direct-value bricks, measuring file size, decode time, and rendering artifacts.
+- Evaluate 3D DCT and quantization for compressing direct-value bricks, measuring file size, decode time, and rendering artifacts
 - Default lights
 - Background images
 - Ray intersection with the scene
