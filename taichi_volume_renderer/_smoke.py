@@ -98,13 +98,14 @@ def refract_at_interface(direction, normal, before, after):
     cosine = ti.min(1., ti.max(0., -direction.dot(normal)))
     ratio = before / after
     discriminant = 1. - ratio*ratio*(1. - cosine*cosine)
-    bent = direction + 2.*cosine*normal
+    mirror = direction + 2.*cosine*normal
+    bent = mirror
     reflectance = 1.
     if discriminant >= 0.:
         bent = ratio*direction + (ratio*cosine - ti.sqrt(discriminant))*normal
         r0 = ((before-after)/(before+after))**2
         reflectance = r0 + (1.-r0)*(1.-cosine)**5
-    return bent.normalized(), reflectance, discriminant < 0.
+    return bent.normalized(), reflectance, discriminant < 0., mirror
 
 
 @ti.func
@@ -130,8 +131,8 @@ def follow_refractive_interface(
         normal = -direction
         if gradient.norm_sqr() > 0.:
             normal = gradient.normalized()
-    bent, fresnel, reflected = refract_at_interface(direction, normal, before, after)
+    bent, fresnel, reflected, mirror = refract_at_interface(direction, normal, before, after)
     if reflected:
         pos -= direction * step
         pos += bent * (.35 * step)
-    return pos, bent, fresnel, reflected
+    return pos, bent, fresnel, reflected, mirror

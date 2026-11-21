@@ -396,7 +396,7 @@ class Scene(_OrbitScene):
                         break
                     ior, occupied = interface_sample(pos)
                     if crosses_refractive_interface(previous_ior, ior, 1., occupied, interfaces):
-                        pos, d, fresnel, reflected = follow_refractive_interface(
+                        pos, d, fresnel, reflected, _ = follow_refractive_interface(
                             pos, d, previous_ior, ior, self._step_length[None], pixel_size,
                             ti.Vector.zero(ti.f32, 3), ior_at,
                         )

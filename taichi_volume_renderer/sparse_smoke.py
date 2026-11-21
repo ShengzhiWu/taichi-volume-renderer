@@ -60,6 +60,7 @@ class SparseSmokeScene(_OrbitScene):
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
+        reflection_environment=None,
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -70,6 +71,7 @@ class SparseSmokeScene(_OrbitScene):
         refraction_mode selects the dense gradient step or discrete interface optics.
         Nonzero Z-up interface_normals override the estimated normal in interface mode.
         emission is an optional 65,536-entry RGB table of linear outgoing radiance.
+        reflection_environment optionally adds (sky RGB, sun RGB) to interface reflections.
         """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
             if not np.isfinite(value) or value <= 0:
@@ -85,6 +87,14 @@ class SparseSmokeScene(_OrbitScene):
         self._stop_threshold = float(stop_threshold)
         self._lighting = bool(lighting)
         self._directional = directional_light is not None
+        self._use_reflection_environment = reflection_environment is not None
+        if self._use_reflection_environment:
+            if not self._lighting or not self._directional:
+                raise ValueError("Interface reflection lighting requires a directional light")
+            sky, sun = reflection_environment
+            self._reflection_environment = (
+                tuple(ambient_light_parameters(sky)), tuple(ambient_light_parameters(sun)),
+            )
         if max_steps is not None and (
             not isinstance(max_steps, (int, np.integer)) or not 0 < max_steps <= 2**31 - 1
         ):
@@ -561,13 +571,18 @@ class SparseSmokeScene(_OrbitScene):
                             normal = self._interface_normals[medium_code]
                         if normal.norm_sqr() == 0. and previous_medium != self._ior[0]:
                             normal = self._interface_normals[previous_code]
-                    origin, direction, fresnel, reflected = follow_refractive_interface(
+                    origin, direction, fresnel, reflected, mirror = follow_refractive_interface(
                         origin, direction, previous_medium, medium, self._step, 1., normal, self._ior_at,
                     )
                     interfaces += 1
                     if reflected:
                         continue
-                    color += transmittance * fresnel * self._background[None]
+                    reflection = self._background[None]
+                    if ti.static(self._use_reflection_environment):
+                        reflection += ti.Vector(self._reflection_environment[0]) * ti.max(0., mirror.z)
+                        alignment = ti.max(0., mirror.dot(self._light_direction[None]))
+                        reflection += ti.Vector(self._reflection_environment[1]) * alignment**58
+                    color += transmittance * fresnel * reflection
                     transmittance *= 1. - fresnel
                     # The empty-region distance was computed along the incident direction.
                     next_sample = 0.

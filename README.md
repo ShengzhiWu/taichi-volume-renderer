@@ -63,6 +63,13 @@ The sparse viewer accepts `--refraction-mode gradient` for a continuous index fi
 
 The gradient mode reuses the dense renderer's Snell step and ends the ray at total internal reflection. The interface mode uses the IOR on both sides of a sampled boundary and estimates the normal from nearby voxels. Fresnel reflection samples the scene background; total internal reflection continues inside the scene.
 
+The sparse Python API accepts `reflection_environment=(sky_rgb, sun_rgb)` as a render-time option. The default is `None`, which uses the background color for the Fresnel reflection. Setting it requires `lighting=True` and a `directional_light`. Both RGB triples are finite, nonnegative linear radiance values.
+
+- `sky_rgb` is the added radiance for a reflection pointing straight up (+Z). Reflections pointing toward the horizon or below it receive zero sky contribution.
+- `sun_rgb` is the added radiance for a reflection pointing straight toward the directional light. The light's direction is normalized, and the highlight falls off as `max(0, dot(mirror, light_direction))**58`. The exponent is fixed. The directional light's RGB intensity controls direct illumination, and `sun_rgb` controls the reflected highlight independently.
+
+The renderer adds these terms to the background color for the reflected portion of an interface interaction and weights the result by Fresnel reflectance and the ray's remaining transmittance. Rays that escape the scene still see the plain background. The option is supplied at render time for any sparse input format.
+
 Use `--max-steps N` on the command line or `max_steps=N` in Python to set a sparse camera ray step limit. Both refraction modes default to 10,000 steps. Straight rays have no default step limit. Steps skipped through empty space count toward the limit.
 
 ```python
