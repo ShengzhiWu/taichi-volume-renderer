@@ -615,11 +615,12 @@ class SparseSmokeScene(_OrbitScene):
                     index = 1.
                     continue
             if ti.static(self._interface):
-                steps = 1.
+                advance = self._step
                 if not has_brick:
-                    steps = self._advance(0., next_sample, self._step)
-                origin += direction * (steps * self._step)
-                previous_steps += steps - 1.
+                    # Land just past the empty cell boundary before resuming regular steps.
+                    advance = ti.max(advance, next_sample + .003)
+                    previous_steps += ti.floor(advance / self._step) - 1.
+                origin += direction * advance
             else:
                 if next_sample > end:
                     break

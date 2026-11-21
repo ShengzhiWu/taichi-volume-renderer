@@ -79,7 +79,7 @@ window = DisplayWindow.from_cxw("path/to/world.cxw", density=0.22)
 window.show()
 ```
 
-The loader returns `SparseVolumeData`, an in-memory sector index and pool of occupied 8³ bricks. In either storage mode, the renderer jumps over missing sectors and bricks while preserving the ray sample spacing.
+The loader returns `SparseVolumeData`, an in-memory sector index and pool of occupied 8³ bricks. The renderer jumps over missing sectors and bricks. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
 
 | Sparse storage mode | Values stored per voxel slot |
 | --- | --- |
