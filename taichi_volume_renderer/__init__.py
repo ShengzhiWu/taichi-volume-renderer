@@ -99,10 +99,6 @@ class _OrbitScene:
         self._background[None] = ti.Vector(value)
 
 
-    def _pose_axes(self, vector):
-        # Preserve the Y-up clipboard format at the serialization boundary.
-        return vector[[0, 2, 1]]
-
     def _camera_axes(self):
         phi = self.get_camera_phi(degrees=False)
         theta = self.get_camera_theta(degrees=False)
@@ -117,13 +113,11 @@ class _OrbitScene:
         self.set_camera_theta(np.arctan2(z, horizontal), degrees=False)
 
     def get_camera_pose(self):
-        """Return the world position, XYZW rotation, and orbit distance in voxel units."""
+        """Return a Z-up pose in voxel units with an XYZW quaternion (local -Z forward)."""
         backward, right = self._camera_axes()
-        backward, right = self._pose_axes(backward), self._pose_axes(right)
-        forward = -backward
-        rotation = np.column_stack((right, np.cross(forward, right), forward))
+        rotation = np.column_stack((right, np.cross(backward, right), backward))
         distance = self.camera_distance * self._scale / self._navigation_unit
-        position = self._pose_axes(self._target[None].to_numpy()) / self._navigation_unit + distance * backward
+        position = self._target[None].to_numpy() / self._navigation_unit + distance * backward
         quaternion = rotation_matrix_to_quaternion(rotation)
         return {
             "position": position.tolist(),
@@ -132,7 +126,7 @@ class _OrbitScene:
         }
 
     def set_camera_pose(self, pose, *, preserve_orbit_distance=False):
-        """Restore position and view direction from a Y-up voxel pose."""
+        """Restore position and view direction from a Z-up voxel pose."""
         if not isinstance(pose, dict) or "position" not in pose or "rotation" not in pose:
             raise ValueError("Expected a camera position and rotation")
         position = np.asarray(pose["position"], dtype=np.float64)
@@ -147,8 +141,8 @@ class _OrbitScene:
         if not np.isfinite(norm) or norm == 0:
             raise ValueError("Invalid camera rotation")
         rotation = rotation_quaternion_to_matrix(quaternion[[3, 0, 1, 2]] / norm)
-        forward = self._pose_axes(rotation[:, 2])
-        target = (self._pose_axes(position) + distance * forward) * self._navigation_unit
+        backward = rotation[:, 2]
+        target = (position - distance * backward) * self._navigation_unit
         camera_distance = distance * self._navigation_unit / self._scale
         limit = np.finfo(np.float32).max
         if (distance > limit or np.any(np.abs(position) > limit) or np.any(np.abs(target) > limit)
@@ -158,7 +152,7 @@ class _OrbitScene:
         self._target[None] = target
         if not preserve_orbit_distance:
             self.camera_distance = camera_distance
-        self._set_camera_direction(-forward)
+        self._set_camera_direction(backward)
 
     def move_camera(self, forward, right, up):
         """Translate the camera by distances in voxel units."""

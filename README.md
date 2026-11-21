@@ -154,7 +154,7 @@ For off-screen rendering, create a `DisplayWindow`. Set the camera with methods 
 
 Use WASD to move, Q/E to descend or ascend, Shift to move faster, and R to restore the opening view. In first-person mode, drag with the left mouse button to turn in place. W/S and the mouse wheel in the Windows Tk viewer move forward and backward along the view direction. In the Windows Tk viewer, right-click to copy or paste a camera pose as JSON.
 
-World coordinates are Z-up, and uniform scaling preserves the scene's proportions. Camera poses copied to the clipboard use Y-up coordinates.
+World coordinates are **Z-up**, and uniform scaling preserves the scene's proportions.
 
 The Windows viewer defaults to a resizable 1280×720 viewport with a fixed long-edge field of view. Pass `resize=False` to `DisplayWindow.show()` to keep a fixed resolution, or `resize=True` to use resizable Taichi ndarrays with an image-processing callback. Callbacks receive the original Taichi field by default. To use GGUI from Python, initialize Taichi with `ti.vulkan` and pass `ggui=True` to `DisplayWindow.show()`. GGUI displays frames as GPU textures without CPU readback and supports keyboard navigation, mouse drag, and adaptive resolution.
 
