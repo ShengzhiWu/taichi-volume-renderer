@@ -98,12 +98,13 @@ window.show()
 
 The VXB importer adapts the file's hierarchy to the renderer's sector and brick layout, expanding uniform bricks in memory. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
 
-| Sparse storage mode | Values stored per voxel slot |
+| Sparse storage mode | Behavior |
 | --- | --- |
-| Indexed | A 16-bit code into a `(65536, 4)` RGB-density material table. Code zero is air. |
-| Direct | A float32 density with uniform white color, or float32 RGB plus density. |
+| `auto` (default) | Follows the VXB file's storage mode, uses `indexed` for CXW block codes, and uses `direct` for VDB densities. |
+| `indexed` | A 16-bit code into a `(65536, 4)` RGB-density material table. Code zero is air. |
+| `direct` | A float32 density with uniform white color, or float32 RGB plus density. |
 
-The default `--storage auto` uses direct storage for VDB density values. For VXB it follows the file's indexed or direct mode. The renderer reads `r`, `g`, `b`, and `density` from VXB and supports up to 65,536 material rows in indexed mode.
+The renderer reads `r`, `g`, `b`, and `density` from VXB and supports up to 65,536 material rows in indexed mode.
 
 Use `--storage direct` to force float storage or `--storage indexed` to force material indices. Indexed storage reserves code 0 for air and fails if there are more than 65,535 distinct non-air values. The same options are available as `storage=` in `DisplayWindow.from_file()`.
 
