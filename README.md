@@ -136,7 +136,7 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 ### VXB sparse material format
 
-[VXB v1](docs/vxb-v1.md) specifies custom material fields, configurable brick levels, and uniform bricks. The file selects bit-packed indices with a material table or direct material values. The [reference codec](taichi_volume_renderer/vxb.py) uses the Python standard library and preserves the brick hierarchy on load.
+The sparse renderer supports VXB (`.vxb`), the voxel scene format developed for this project. VXB provides custom material fields, configurable brick levels, uniform bricks, and a choice of indexed or direct material values. See the [VXB format overview](docs/vxb.md) and [VXB v1 binary specification](docs/vxb-v1.md).
 
 Convert a packed-color CXW v7/v8 file with one untransformed occupied entity from the repository root.
 

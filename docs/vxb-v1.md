@@ -2,6 +2,8 @@
 
 VXB stores one sparse, Z-up world grid. Voxels contain either material indices or direct material values, as selected by the file header. A file supplies its own material schema, brick hierarchy, and optional initial camera pose.
 
+For the design overview and viewer instructions, see [VXB sparse voxel scenes](vxb.md).
+
 All multi-byte integers and IEEE 754 floats are little-endian. Sizes and offsets are in bytes. World coordinates are in voxel units. The unit voxel at integer coordinate `(x, y, z)` has center `(x + 0.5, y + 0.5, z + 0.5)`.
 
 ## File order
