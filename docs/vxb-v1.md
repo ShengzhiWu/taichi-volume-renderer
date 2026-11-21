@@ -1,6 +1,6 @@
 # VXB version 1
 
-VXB stores one sparse, Z-up world grid. Voxels contain only material indices. A file supplies its own material schema, brick hierarchy, and optional initial camera pose.
+VXB stores one sparse, Z-up world grid. Voxels contain either material indices or direct material values, as selected by the file header. A file supplies its own material schema, brick hierarchy, and optional initial camera pose.
 
 All multi-byte integers and IEEE 754 floats are little-endian. Sizes and offsets are in bytes. World coordinates are in voxel units. The unit voxel at integer coordinate `(x, y, z)` has center `(x + 0.5, y + 0.5, z + 0.5)`.
 
@@ -9,7 +9,7 @@ All multi-byte integers and IEEE 754 floats are little-endian. Sizes and offsets
 1. Fixed header.
 2. Brick size exponents, one byte per level.
 3. Camera pose, if present.
-4. Material field descriptors and rows.
+4. Material field descriptors, followed by the material table rows in indexed mode.
 5. Top-level brick directory.
 6. Compressed top-level brick payloads, in directory order.
 
@@ -19,9 +19,9 @@ All multi-byte integers and IEEE 754 floats are little-endian. Sizes and offsets
 |---:|---|---|
 | 0 | 4 bytes | `56 58 42 00` (`VXB\0`) |
 | 4 | u16 | Version, `1` |
-| 6 | u8 | Flags. Bit 0 indicates a camera pose. All other bits are zero |
+| 6 | u8 | Flags. Bit 0 indicates a camera pose. Bit 1 selects direct material values when set and a material table when clear. Bits 2–7 are zero |
 | 7 | u8 | Number of brick levels, 1–28 |
-| 8 | u32 | Number of material rows, including air, at least 1 |
+| 8 | u32 | Number of material table rows. At least 1, including air, in indexed mode. Zero in direct mode |
 | 12 | u16 | Number of fields per material, at least 1 |
 | 14 | u32 | Number of top-level bricks |
 
@@ -31,7 +31,7 @@ The optional camera has seven finite `f64` values in the order `px, py, pz, qx, 
 
 ### Materials
 
-Each field descriptor is a `u16` UTF-8 byte count, a `u8` type tag, then that many name bytes. Names are nonempty and unique, with byte-for-byte, case-sensitive comparison. Descriptors are followed by all material rows. Each row stores one value per field, in descriptor order. There is no padding between values or rows.
+Each field descriptor is a `u16` UTF-8 byte count, a `u8` type tag, then that many name bytes. Names are nonempty and unique, with byte-for-byte, case-sensitive comparison. A material row stores one value per field, in descriptor order, with no padding. In indexed mode, all rows of the material table immediately follow the descriptors. In direct mode, the brick directory immediately follows the descriptors, and material rows appear only in brick payloads.
 
 | Tag | Type | Representation |
 |---:|---|---|
@@ -39,11 +39,11 @@ Each field descriptor is a `u16` UTF-8 byte count, a `u8` type tag, then that ma
 | 1 | `i32` | Signed 32-bit integer |
 | 2 | `bool` | One byte, exactly 0 or 1 |
 
-Material indices are zero-based row numbers. Index 0 is always air. Its row follows the same layout as other rows, and its values are ignored when interpreting the scene. VXB codecs preserve unrecognized field names with recognized types.
+In indexed mode, material indices are zero-based row numbers. Index 0 is always air. Its row follows the same layout as other rows, and its values are ignored when interpreting the scene. In direct mode, a row whose numeric fields all equal zero and whose boolean fields are all false represents air. VXB codecs preserve unrecognized field names with recognized types in both modes.
 
 The basic volume fields are `r`, `g`, `b`, and `density`, all `f32`. The first three give linear RGB and `density` is nonnegative extinction density per voxel unit. Applications can agree on more fields, such as an `ior` float, world-space `normal_x`, `normal_y`, and `normal_z` floats, or a `use_voxel_face_normal` boolean. The wire format assigns no additional layout to these fields.
 
-For `M` material rows, the index width `w` is the smallest nonnegative integer with `2**w >= M`. For example, 300 rows use 9 bits. With one row, the scene is all air and the top-level brick count is zero.
+In indexed mode, for `M` material rows, the index width `w` is the smallest nonnegative integer with `2**w >= M`. For example, 300 rows use 9 bits. With one row, the scene is all air and the top-level brick count is zero. In direct mode, the row size `R` is the sum of the field sizes (4 bytes per `f32` or `i32`, 1 per `bool`).
 
 ### Top-level brick directory
 
@@ -62,22 +62,22 @@ Coordinates are signed brick coordinates, so their product with the top-level si
 
 A decompressed payload contains exactly one top-level brick record. Every brick begins with a `u8` tag.
 
-| Tag | Record | Allowed levels |
-|---:|---|---|
-| 0 | Uniform material index, unsigned little-endian in `ceil(w/8)` bytes | Any |
-| 1 | Positive `u32` child count, then one `u32` child slot and one brick record per child | Any except the smallest |
-| 2 | 512 material indices, packed at `w` bits per index | Smallest only |
+| Tag | Indexed payload | Direct payload | Allowed levels |
+|---:|---|---|---|
+| 0 | One material index in `ceil(w/8)` unsigned little-endian bytes | One material row (`R` bytes) | Any |
+| 1 | Positive `u32` child count, then one `u32` child slot and one brick record per child | Same as indexed mode | Any except the smallest |
+| 2 | 512 material indices, packed at `w` bits per index | 512 consecutive material rows (`512*R` bytes) | Smallest only |
 
-Uniform bricks must use a nonzero material index. Missing top-level bricks and missing child slots represent air. A child brick may itself be uniform, so a decoder can reconstruct the tree without expanding it into voxels.
+Missing top-level bricks and missing child slots represent air. Uniform bricks must contain a non-air material. A child brick may itself be uniform, so a decoder can reconstruct the tree without expanding it into voxels.
 
-If the next level fits `n` bricks along one axis, child coordinates `(x, y, z)` in `[0, n)` use slot `x + n*(y + n*z)`. Child slots are unique and written in ascending order. The same ordering applies to the voxels in a mixed brick, with `n = 8`. A mixed brick contains at least two different valid indices.
+If the next level fits `n` bricks along one axis, child coordinates `(x, y, z)` in `[0, n)` use slot `x + n*(y + n*z)`. Child slots are unique and written in ascending order. The same ordering applies to the voxels in a mixed brick, with `n = 8`. A mixed brick contains at least two distinct valid indices in indexed mode, or at least two different rows by field value in direct mode.
 
-Pack mixed indices least-significant bit first, with no gaps. Equivalently, index `i` starts at bit `i*w` of the little-endian bit stream. For 3-bit indices, the first four values `1, 2, 3, 4` contribute `D1 08` to the first two bytes if the next value is zero. A mixed brick always consumes exactly `64*w` bytes after the tag.
+In indexed mode, pack mixed indices least-significant bit first, with no gaps. Equivalently, index `i` starts at bit `i*w` of the little-endian bit stream. For 3-bit indices, the first four values `1, 2, 3, 4` contribute `D1 08` to the first two bytes if the next value is zero. A mixed indexed brick consumes exactly `64*w` bytes after the tag.
 
 ## Decoder reference
 
-Read the header, sizes, camera, and material rows. For each directory entry, inflate its payload and parse one brick. On a child record, read a slot number and recursively parse at the next level. No external palette or scene metadata is needed.
+Read the header, sizes, optional camera, and field descriptors. Read the table rows in indexed mode. For each directory entry, inflate its payload and parse one brick. On a child record, read a slot number and recursively parse at the next level. No external palette or scene metadata is needed.
 
-The [Python reference codec](../taichi_volume_renderer/vxb.py) uses only the standard library and can be copied or imported as a standalone module. The renderer's existing CXW and OpenVDB loaders are separate.
+The [Python reference codec](../taichi_volume_renderer/vxb.py) uses only the standard library and can be copied or imported as a standalone module. To write direct values, pass `materials=None` to `VxbScene`. A direct uniform brick is one tuple of field values, and a direct mixed brick is a tuple of 512 such tuples. The renderer's existing CXW and OpenVDB loaders are separate.
 
 The [sample file](../tests/fixtures/vxb-v1.vxb) has levels `[128, 32, 8]`, five materials including air, and 3-bit mixed indices. Its camera position is `(1.25, -2, 3)` with an identity quaternion. The top-level brick at `(-1, 0, 0)` is entirely material 1. The brick at `(0, 0, 0)` has child slot 0 uniformly filled with material 2, and child slot 1 has its own child slot 0 containing a mixed brick. That mixed brick starts with `1, 2, 3, 4` and is otherwise air. The child slot at `(0, 1, 0)` of the top-level brick is absent, so voxel `(0, 32, 0)` is air.

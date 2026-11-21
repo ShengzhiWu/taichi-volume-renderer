@@ -1,8 +1,10 @@
 import importlib.util
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
+import zlib
 
 
 # Load the same single-file codec a standalone consumer would use.
@@ -57,6 +59,30 @@ class VxbTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "index"):
                 vxb.save_vxb(path, invalid)
             self.assertEqual(vxb.load_vxb(path), scene)
+
+    def test_direct_material_rows_without_a_table(self):
+        fields = tuple(vxb.MaterialField(name, kind) for name, kind in (
+            ("density", "f32"), ("use_voxel_face_normal", "bool"), ("region", "i32"),
+        ))
+        uniform = (.25, True, -2)
+        rows = tuple((index / 512, bool(index % 2), index) for index in range(512))
+        scene = vxb.VxbScene(fields, None, (128, 8), {(-1, 0, 0): uniform, (0, 0, 0): {0: rows}})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "direct.vxb"
+            vxb.save_vxb(path, scene)
+            self.assertEqual(vxb.load_vxb(path), scene)
+            encoded = path.read_bytes()
+            self.assertEqual(struct.unpack_from("<4sHBBIHI", encoded), (b"VXB\0", 1, 2, 2, 0, 3, 2))
+            first_entry = 18 + 2 + sum(3 + len(field.name) for field in fields)
+            payloads = []
+            for entry in (first_entry, first_entry + 28):
+                _, _, _, offset, size, raw_size = struct.unpack_from("<3iQII", encoded, entry)
+                raw = zlib.decompress(encoded[offset:offset + size], wbits=-15)
+                self.assertEqual(len(raw), raw_size)
+                payloads.append(raw)
+            self.assertEqual(payloads[0], b"\x00" + struct.pack("<fBi", *uniform))
+            self.assertEqual(payloads[1], b"\x01" + struct.pack("<II", 1, 0) + b"\x02"
+                             + b"".join(struct.pack("<fBi", *row) for row in rows))
 
 
 if __name__ == "__main__":

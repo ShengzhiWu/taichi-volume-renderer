@@ -22,10 +22,12 @@ _FIELD_TYPES = {"f32": (0, "f"), "i32": (1, "i"), "bool": (2, "B")}
 _TYPE_NAMES = tuple(_FIELD_TYPES)
 _MAGIC = b"VXB\0"
 _VERSION = 1
+_DIRECT_VALUES = 2
 _LEAF_VOXELS = 512
 
-# A brick is a uniform index, a tuple of 512 indices, or a sparse map of child slots.
-Brick = Union[int, Tuple[int, ...], Dict[int, "Brick"]]
+MaterialRow = Tuple[Union[float, int, bool], ...]
+# Uniform bricks hold one value, mixed bricks hold 512, and branches map child slots.
+Brick = Union[int, MaterialRow, Tuple[MaterialRow, ...], Dict[int, "Brick"]]
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,7 @@ class CameraPose:
 @dataclass(frozen=True)
 class VxbScene:
     fields: tuple[MaterialField, ...]
-    materials: tuple[tuple[float | int | bool, ...], ...]
+    materials: tuple[MaterialRow, ...] | None  # None selects direct material values.
     brick_sizes: tuple[int, ...]
     bricks: dict[tuple[int, int, int], Brick]
     camera: CameraPose | None = None
@@ -88,6 +90,34 @@ def _material_layout(fields):
     return descriptors, struct.Struct("<" + "".join(codes))
 
 
+def _pack_row(row, fields, layout):
+    if not hasattr(row, "__len__") or len(row) != len(fields):
+        raise ValueError("VXB material row does not match the schema")
+    for field, value in zip(fields, row):
+        if field.type == "bool":
+            valid = isinstance(value, bool)
+        elif field.type == "i32":
+            valid = isinstance(value, Integral) and not isinstance(value, bool)
+        else:
+            valid = isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(value)
+        if not valid:
+            raise ValueError(f"Invalid value for VXB material field {field.name}")
+    return layout.pack(*row)
+
+
+def _read_row(stream, fields, layout):
+    row = []
+    for field, value in zip(fields, layout.unpack(_read_exact(stream, layout.size))):
+        if field.type == "bool":
+            if value not in (0, 1):
+                raise ValueError("Invalid VXB boolean")
+            value = bool(value)
+        elif field.type == "f32" and not math.isfinite(value):
+            raise ValueError("VXB float fields must be finite")
+        row.append(value)
+    return tuple(row)
+
+
 def _check_index(index, count):
     if not isinstance(index, Integral) or isinstance(index, bool) or not 0 <= index < count:
         raise ValueError("VXB material index is outside the table")
@@ -120,7 +150,7 @@ def _unpack_indices(data, width):
         bits -= width
 
 
-def _write_brick(stream, brick, ratios, level, width, count):
+def _write_brick(stream, brick, ratios, level, width, count, row_format):
     if isinstance(brick, Integral):
         index = _check_index(brick, count)
         if index == 0:
@@ -134,18 +164,37 @@ def _write_brick(stream, brick, ratios, level, width, count):
             if not isinstance(slot, Integral) or not 0 <= slot < ratios[level]**3:
                 raise ValueError("VXB child slot is outside its brick")
             stream.write(_U32.pack(slot))
-            _write_brick(stream, child, ratios, level + 1, width, count)
+            _write_brick(stream, child, ratios, level + 1, width, count, row_format)
+    elif not count and isinstance(brick, tuple) and brick and not isinstance(brick[0], tuple):
+        payload = _pack_row(brick, *row_format)
+        if not any(row_format[1].unpack(payload)):
+            raise ValueError("Omit air bricks instead of writing a zero uniform row")
+        stream.write(b"\x00" + payload)
     else:
         if not isinstance(brick, tuple) or level != len(ratios) or len(brick) != _LEAF_VOXELS:
-            raise ValueError("A mixed VXB brick needs 512 indices at the smallest level")
-        if min(brick) == max(brick):
-            raise ValueError("Store a constant VXB brick as one uniform index")
-        stream.write(b"\x02" + _pack_indices(brick, width, count))
+            raise ValueError("A mixed VXB brick needs 512 values at the smallest level")
+        if count:
+            if min(brick) == max(brick):
+                raise ValueError("Store a constant VXB brick as one uniform index")
+            stream.write(b"\x02" + _pack_indices(brick, width, count))
+        else:
+            rows = [_pack_row(row, *row_format) for row in brick]
+            layout = row_format[1]
+            first = layout.unpack(rows[0])
+            if all(layout.unpack(row) == first for row in rows[1:]):
+                raise ValueError("Store a constant VXB brick as one uniform row")
+            stream.write(b"\x02")
+            stream.writelines(rows)
 
 
-def _read_brick(stream, ratios, level, width, count):
+def _read_brick(stream, ratios, level, width, count, row_format):
     tag = _read_exact(stream, 1)[0]
     if tag == 0:
+        if not count:
+            row = _read_row(stream, *row_format)
+            if not any(row):
+                raise ValueError("Invalid VXB uniform air row")
+            return row
         index = int.from_bytes(_read_exact(stream, (width + 7) // 8), "little")
         if not 0 < index < count:
             raise ValueError("Invalid VXB uniform brick index")
@@ -161,9 +210,14 @@ def _read_brick(stream, ratios, level, width, count):
             if not previous < slot < ratios[level]**3:
                 raise ValueError("VXB child slots must be sorted, unique, and in range")
             previous = slot
-            children[slot] = _read_brick(stream, ratios, level + 1, width, count)
+            children[slot] = _read_brick(stream, ratios, level + 1, width, count, row_format)
         return children
     if tag == 2 and level == len(ratios):
+        if not count:
+            rows = tuple(_read_row(stream, *row_format) for _ in range(_LEAF_VOXELS))
+            if all(row == rows[0] for row in rows[1:]):
+                raise ValueError("Invalid VXB mixed brick with constant material values")
+            return rows
         indices = tuple(_unpack_indices(_read_exact(stream, _LEAF_VOXELS * width // 8), width))
         if max(indices) >= count or min(indices) == max(indices):
             raise ValueError("Invalid VXB mixed brick indices")
@@ -171,9 +225,10 @@ def _read_brick(stream, ratios, level, width, count):
     raise ValueError("Invalid VXB brick tag for this level")
 
 
-def _max_brick_bytes(ratios, width):
-    uniform = 1 + (width + 7) // 8
-    size = max(uniform, 1 + _LEAF_VOXELS * width // 8)
+def _max_brick_bytes(ratios, width, row_size):
+    uniform = 1 + (row_size or (width + 7) // 8)
+    mixed = _LEAF_VOXELS * row_size if row_size else _LEAF_VOXELS * width // 8
+    size = max(uniform, 1 + mixed)
     for ratio in reversed(ratios):
         size = max(uniform, 5 + ratio**3 * (4 + size))
     return size
@@ -186,8 +241,9 @@ def load_vxb(path) -> VxbScene:
         stream.seek(0)
         magic, version, flags, levels, count, field_count, root_count = _HEADER.unpack(
             _read_exact(stream, _HEADER.size))
-        if (magic != _MAGIC or version != _VERSION or flags & ~1 or not 1 <= levels <= 28
-                or not count or not field_count or (count == 1 and root_count)):
+        direct = bool(flags & _DIRECT_VALUES)
+        if (magic != _MAGIC or version != _VERSION or flags & ~3 or not 1 <= levels <= 28
+                or direct != (count == 0) or not field_count or (count == 1 and root_count)):
             raise ValueError("Invalid or unsupported VXB header")
         sizes = tuple(1 << power for power in _read_exact(stream, levels))
         ratios = _brick_ratios(sizes)
@@ -208,21 +264,10 @@ def load_vxb(path) -> VxbScene:
         payload_start = rows_end + root_count * _ROOT.size
         if payload_start > file_size:
             raise ValueError("Truncated VXB material table or brick directory")
-        rows = []
-        for _ in range(count):
-            row = []
-            for field, value in zip(fields, row_layout.unpack(_read_exact(stream, row_layout.size))):
-                if field.type == "bool":
-                    if value not in (0, 1):
-                        raise ValueError("Invalid VXB boolean")
-                    value = bool(value)
-                elif field.type == "f32" and not math.isfinite(value):
-                    raise ValueError("VXB float fields must be finite")
-                row.append(value)
-            rows.append(tuple(row))
-
-        width = (count - 1).bit_length()
-        max_raw = _max_brick_bytes(ratios, width)
+        row_format = (fields, row_layout)
+        rows = None if direct else tuple(_read_row(stream, *row_format) for _ in range(count))
+        width = (count - 1).bit_length() if count else 0
+        max_raw = _max_brick_bytes(ratios, width, row_layout.size if direct else 0)
         entries = []
         previous = None
         expected_offset = payload_start
@@ -248,28 +293,31 @@ def load_vxb(path) -> VxbScene:
             if len(data) != raw or not inflater.eof or inflater.unused_data:
                 raise ValueError("Invalid VXB decompressed brick size")
             payload = BytesIO(data)
-            bricks[coord] = _read_brick(payload, ratios, 0, width, count)
+            bricks[coord] = _read_brick(payload, ratios, 0, width, count, row_format)
             if payload.read(1):
                 raise ValueError("Unexpected bytes at the end of a VXB brick")
-    return VxbScene(tuple(fields), tuple(rows), sizes, bricks, camera)
+    return VxbScene(tuple(fields), rows, sizes, bricks, camera)
 
 
 def save_vxb(path, scene):
     """Encode a VXB scene and replace the destination after a successful write."""
     ratios = _brick_ratios(scene.brick_sizes)
-    count = len(scene.materials)
-    if not 1 <= count < 2**32 or not 1 <= len(scene.fields) < 2**16 or len(scene.bricks) >= 2**32:
+    direct = scene.materials is None
+    count = 0 if direct else len(scene.materials)
+    if (not direct and not 1 <= count < 2**32) or not 1 <= len(scene.fields) < 2**16 or len(scene.bricks) >= 2**32:
         raise ValueError("VXB scene counts exceed the format limits")
     if count == 1 and scene.bricks:
         raise ValueError("A VXB file with only air cannot contain bricks")
     descriptors, row_layout = _material_layout(scene.fields)
-    width = (count - 1).bit_length()
+    row_format = (scene.fields, row_layout)
+    width = (count - 1).bit_length() if count else 0
     camera = scene.camera
+    flags = int(camera is not None) | (_DIRECT_VALUES if direct else 0)
     path = Path(path)
     with tempfile.TemporaryDirectory(dir=path.parent) as scratch:
         temporary = Path(scratch) / "scene.vxb"
         with temporary.open("wb") as stream:
-            stream.write(_HEADER.pack(_MAGIC, _VERSION, int(camera is not None), len(scene.brick_sizes),
+            stream.write(_HEADER.pack(_MAGIC, _VERSION, flags, len(scene.brick_sizes),
                                       count, len(scene.fields), len(scene.bricks)))
             stream.write(bytes(int(size).bit_length() - 1 for size in scene.brick_sizes))
             if camera is not None:
@@ -279,26 +327,16 @@ def save_vxb(path, scene):
                 _check_camera(values)
                 stream.write(_POSE.pack(*values))
             stream.writelines(descriptors)
-            for row in scene.materials:
-                if len(row) != len(scene.fields):
-                    raise ValueError("VXB material row does not match the schema")
-                for field, value in zip(scene.fields, row):
-                    if field.type == "bool":
-                        valid = isinstance(value, bool)
-                    elif field.type == "i32":
-                        valid = isinstance(value, Integral) and not isinstance(value, bool)
-                    else:
-                        valid = isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(value)
-                    if not valid:
-                        raise ValueError(f"Invalid value for VXB material field {field.name}")
-                stream.write(row_layout.pack(*row))
+            if not direct:
+                for row in scene.materials:
+                    stream.write(_pack_row(row, *row_format))
 
             directory = stream.tell()
             stream.seek(directory + len(scene.bricks) * _ROOT.size)
             entries = []
             for coord, brick in sorted(scene.bricks.items()):
                 payload = BytesIO()
-                _write_brick(payload, brick, ratios, 0, width, count)
+                _write_brick(payload, brick, ratios, 0, width, count, row_format)
                 raw = payload.getvalue()
                 deflater = zlib.compressobj(wbits=-15)
                 packed = deflater.compress(raw) + deflater.flush()

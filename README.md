@@ -129,7 +129,7 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 ### VXB sparse material format
 
-[VXB v1](docs/vxb-v1.md) specifies a single-file material table, configurable brick levels, uniform bricks, and bit-packed material indices. The [reference codec](taichi_volume_renderer/vxb.py) uses the Python standard library and preserves the brick hierarchy on load.
+[VXB v1](docs/vxb-v1.md) specifies custom material fields, configurable brick levels, and uniform bricks. The file selects bit-packed indices with a material table or direct material values. The [reference codec](taichi_volume_renderer/vxb.py) uses the Python standard library and preserves the brick hierarchy on load.
 
 ### Refraction
 
