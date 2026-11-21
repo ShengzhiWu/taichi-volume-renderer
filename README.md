@@ -147,7 +147,21 @@ The renderer adds these terms to the background color for the reflected portion 
 
 ### Off-Screen Rendering
 
-For off-screen rendering, create a `DisplayWindow`. Set the camera with methods such as `window.scene.set_camera_phi(30)`, call `window.scene.update_light()`, then render with `window.scene.render(window.pixels)` and retrieve the RGB array with `window.pixels.to_numpy()`. The viewer window opens only when you call `show()`. You can reuse the lighting for multiple views of a static scene.
+Off-screen rendering runs directly from Python without opening a viewer window. With a static scene and fixed lighting, load the scene and precompute lighting once, then reuse the same scene and pixel buffer for each frame.
+
+```python
+import taichi as ti
+from taichi_volume_renderer import DisplayWindow
+
+window = DisplayWindow.from_file("path/to/world.vxb")
+scene = window.scene
+scene.update_light()
+
+for frame in range(60):
+    scene.render(window.pixels)
+    ti.tools.imwrite(window.pixels.to_numpy(), f"frame_{frame:03d}.png")
+    scene.move_camera(forward=1, right=0, up=0)
+```
 
 ### Details
 
