@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
 import math
@@ -187,7 +188,7 @@ def _write_brick(stream, brick, ratios, level, width, count, row_format):
             stream.writelines(rows)
 
 
-def _read_brick(stream, ratios, level, width, count, row_format):
+def _read_brick(stream, ratios, level, width, count, row_format, read_mixed=None):
     tag = _read_exact(stream, 1)[0]
     if tag == 0:
         if not count:
@@ -210,9 +211,14 @@ def _read_brick(stream, ratios, level, width, count, row_format):
             if not previous < slot < ratios[level]**3:
                 raise ValueError("VXB child slots must be sorted, unique, and in range")
             previous = slot
-            children[slot] = _read_brick(stream, ratios, level + 1, width, count, row_format)
+            children[slot] = _read_brick(
+                stream, ratios, level + 1, width, count, row_format, read_mixed,
+            )
         return children
     if tag == 2 and level == len(ratios):
+        if read_mixed is not None:
+            size = _LEAF_VOXELS * row_format[1].size if not count else _LEAF_VOXELS * width // 8
+            return read_mixed(stream, size)
         if not count:
             rows = tuple(_read_row(stream, *row_format) for _ in range(_LEAF_VOXELS))
             if all(row == rows[0] for row in rows[1:]):
@@ -234,8 +240,8 @@ def _max_brick_bytes(ratios, width, row_size):
     return size
 
 
-def load_vxb(path) -> VxbScene:
-    """Read material rows, all brick levels, and any initial camera pose."""
+@contextmanager
+def _open_vxb(path):
     with open(path, "rb") as stream:
         file_size = stream.seek(0, os.SEEK_END)
         stream.seek(0)
@@ -283,20 +289,29 @@ def load_vxb(path) -> VxbScene:
         if expected_offset != file_size:
             raise ValueError("Unexpected bytes after the VXB brick payloads")
 
-        bricks = {}
-        for coord, packed, raw in entries:
-            inflater = zlib.decompressobj(-15)
-            try:
-                data = inflater.decompress(_read_exact(stream, packed), raw + 1)
-            except zlib.error as error:
-                raise ValueError("Invalid VXB Deflate payload") from error
-            if len(data) != raw or not inflater.eof or inflater.unused_data:
-                raise ValueError("Invalid VXB decompressed brick size")
-            payload = BytesIO(data)
-            bricks[coord] = _read_brick(payload, ratios, 0, width, count, row_format)
-            if payload.read(1):
-                raise ValueError("Unexpected bytes at the end of a VXB brick")
-    return VxbScene(tuple(fields), rows, sizes, bricks, camera)
+        def read_roots(read_mixed=None):
+            stream.seek(payload_start)
+            for coord, packed, raw in entries:
+                inflater = zlib.decompressobj(-15)
+                try:
+                    data = inflater.decompress(_read_exact(stream, packed), raw + 1)
+                except zlib.error as error:
+                    raise ValueError("Invalid VXB Deflate payload") from error
+                if len(data) != raw or not inflater.eof or inflater.unused_data:
+                    raise ValueError("Invalid VXB decompressed brick size")
+                payload = BytesIO(data)
+                brick = _read_brick(payload, ratios, 0, width, count, row_format, read_mixed)
+                if payload.read(1):
+                    raise ValueError("Unexpected bytes at the end of a VXB brick")
+                yield coord, brick
+
+        yield tuple(fields), rows, sizes, camera, read_roots
+
+
+def load_vxb(path) -> VxbScene:
+    """Read material rows, all brick levels, and any initial camera pose."""
+    with _open_vxb(path) as (fields, rows, sizes, camera, read_roots):
+        return VxbScene(fields, rows, sizes, dict(read_roots()), camera)
 
 
 def save_vxb(path, scene):
