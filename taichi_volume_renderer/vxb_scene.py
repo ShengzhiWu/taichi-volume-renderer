@@ -24,9 +24,12 @@ def _leaves(brick, origin, sizes, level, indexed):
             yield from _leaves(child, start, sizes, level + 1, indexed)
     else:
         uniform = isinstance(brick, int) if indexed else not isinstance(brick[0], tuple)
-        ranges = (range(o // 8, (o + size) // 8) for o in origin)
-        for coord in product(*ranges):
-            yield coord, brick, uniform
+        if uniform and size >= 128:
+            yield tuple(o // size for o in origin), brick, True, size
+        else:
+            ranges = (range(o // 8, (o + size) // 8) for o in origin)
+            for coord in product(*ranges):
+                yield coord, brick, uniform, 8
 
 
 def _optical_columns(schema):
@@ -52,10 +55,14 @@ def _skip_mixed(stream, size):
     _read_exact(stream, size)
 
 
-def _leaf_count(brick, sizes, level=0):
-    if not isinstance(brick, dict):
-        return (sizes[level] // 8)**3
-    return sum(_leaf_count(child, sizes, level + 1) for child in brick.values())
+def _count_bricks(brick, sizes, counts, level=0):
+    if isinstance(brick, dict):
+        for child in brick.values():
+            _count_bricks(child, sizes, counts, level + 1)
+    elif sizes[level] >= 128:
+        counts[1] += 1
+    else:
+        counts[0] += (sizes[level] // 8)**3
 
 
 def _write_mixed_indices(blocks, mixed, width, material_count):
@@ -76,12 +83,14 @@ def _write_mixed_indices(blocks, mixed, width, material_count):
 
 
 def _load_bricks(read_roots, sizes, materials, columns, density):
-    # Count expanded leaves first so the voxel pool is allocated only once.
+    # Count ordinary rows and large uniform rows before allocating the voxel pool.
     roots = []
-    brick_count = 0
+    counts = [0, 0]
     for coord, brick in read_roots(_skip_mixed):
         roots.append(coord)
-        brick_count += _leaf_count(brick, sizes)
+        _count_bricks(brick, sizes, counts)
+    regular_count, uniform_count = counts
+    brick_count = regular_count + uniform_count
     if not roots:
         raise ValueError("VXB world has no occupied bricks")
 
@@ -97,11 +106,20 @@ def _load_bricks(read_roots, sizes, materials, columns, density):
               else np.empty((brick_count, 512, 4), dtype=np.float32))
     width = (len(materials) - 1).bit_length() if indexed else 0
     tables = {}
+    uniform_bricks = []
     index = 0
     for coord, brick in read_roots(_read_exact if indexed else None):
         origin = tuple(axis * sizes[0] for axis in coord)
         mixed = []
-        for (x, y, z), values, uniform in _leaves(brick, origin, sizes, 0, indexed):
+        for (x, y, z), values, uniform, size in _leaves(brick, origin, sizes, 0, indexed):
+            if size >= 128:
+                row = regular_count + len(uniform_bricks)
+                uniform_bricks.append((size.bit_length() - 1, x, y, z, row))
+                if indexed:
+                    blocks[row] = values
+                else:
+                    _copy_rgba(blocks[row], np.asarray(values, dtype=np.float32), columns, density)
+                continue
             sector = (x // 16, y // 16, z // 16)
             table = tables.get(sector)
             if table is None:
@@ -127,8 +145,10 @@ def _load_bricks(read_roots, sizes, materials, columns, density):
 
     sectors = sorted(tables)
     entity = Entity(np.zeros(3), np.eye(3), 0, len(sectors), lower, upper)
-    return SparseVolumeData([entity], np.asarray(sectors, dtype=np.int32),
-                            np.stack([tables[coord] for coord in sectors]), blocks, None)
+    brick_ids = (np.stack([tables[coord] for coord in sectors]) if sectors
+                 else np.empty((0, 4096), dtype=np.int32))
+    return SparseVolumeData([entity], np.asarray(sectors, dtype=np.int32).reshape(-1, 3),
+                            brick_ids, blocks, None, tuple(sorted(uniform_bricks)))
 
 
 def load_vxb_volume(path, density):

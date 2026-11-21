@@ -96,7 +96,7 @@ window = DisplayWindow.from_file("path/to/world.vxb")
 window.show()
 ```
 
-The VXB importer adapts the file's hierarchy to the renderer's sector and brick layout, expanding uniform bricks in memory. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
+The VXB importer adapts the file's hierarchy to the renderer's sector and brick layout. Uniform bricks that span whole sectors stay compact and use on-demand lighting. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
 
 | Sparse storage mode | Behavior |
 | --- | --- |

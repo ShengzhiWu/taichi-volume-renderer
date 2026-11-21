@@ -30,6 +30,8 @@ class SparseVolumeData:
     brick_ids: np.ndarray
     blocks: np.ndarray
     player_pose: object
+    # For single-entity scenes: (log2(size), x, y, z, material brick row).
+    uniform_bricks: tuple = ()
 
 
 def index_brick_values(blocks):

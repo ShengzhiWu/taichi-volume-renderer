@@ -111,10 +111,25 @@ class SparseSmokeScene(_OrbitScene):
         self.entity_count = len(data.entities)
         self.sector_count = len(data.sectors)
         self.brick_count = len(data.blocks)
-        self._sectors = ti.Vector.field(3, dtype=ti.i32, shape=self.sector_count)
-        self._brick_ids = ti.field(ti.i32, shape=data.brick_ids.shape)
-        self._sectors.from_numpy(data.sectors)
-        self._brick_ids.from_numpy(data.brick_ids)
+        self._regular_brick_count = self.brick_count - len(data.uniform_bricks)
+        self._has_uniform_bricks = bool(data.uniform_bricks)
+        if self.sector_count:
+            self._sectors = ti.Vector.field(3, dtype=ti.i32, shape=self.sector_count)
+            self._brick_ids = ti.field(ti.i32, shape=data.brick_ids.shape)
+            self._sectors.from_numpy(data.sectors)
+            self._brick_ids.from_numpy(data.brick_ids)
+        if self._has_uniform_bricks:
+            if self.entity_count != 1:
+                raise ValueError("Large uniform bricks require a single sparse entity")
+            uniform = np.asarray(data.uniform_bricks, dtype=np.int32)
+            levels, starts = np.unique(uniform[:, 0], return_index=True)
+            ends = np.append(starts[1:], len(uniform))
+            self._uniform_ranges = ti.Vector.field(3, dtype=ti.i32, shape=len(levels))
+            self._uniform_coords = ti.Vector.field(3, dtype=ti.i32, shape=len(uniform))
+            self._uniform_rows = ti.field(ti.i32, shape=len(uniform))
+            self._uniform_ranges.from_numpy(np.column_stack((levels, starts, ends)).astype(np.int32))
+            self._uniform_coords.from_numpy(np.ascontiguousarray(uniform[:, 1:4]))
+            self._uniform_rows.from_numpy(np.ascontiguousarray(uniform[:, 4]))
         self._load_voxels(data.blocks, materials, density, gamma, storage)
         if self._emissive:
             if self._direct or data.blocks.dtype != np.uint16:
@@ -217,12 +232,12 @@ class SparseSmokeScene(_OrbitScene):
         else:
             raise ValueError("Expected 'overview' or an available 'saved' camera pose")
 
-    def _brick_field(self, channels):
+    def _brick_field(self, channels, brick_count):
         field = ti.Vector.field(channels, dtype=ti.f32)
         for channel in range(channels):
             # Keep each channel in its own Vulkan buffer.
             fields = ti.FieldsBuilder()
-            fields.dense(ti.ij, (self.brick_count, 512)).place(field.get_scalar_field(channel))
+            fields.dense(ti.ij, (brick_count, 512)).place(field.get_scalar_field(channel))
             fields.finalize()
         return field
 
@@ -268,7 +283,7 @@ class SparseSmokeScene(_OrbitScene):
 
             if self._direct:
                 self._value_channels = 4
-                self._values = self._brick_field(self._value_channels)
+                self._values = self._brick_field(self._value_channels, self.brick_count)
                 self._expand_indexed_voxels()
                 ti.sync()
                 indexed_tree.destroy()
@@ -277,7 +292,7 @@ class SparseSmokeScene(_OrbitScene):
         if blocks.shape == shape:
             blocks = blocks[..., None]
         self._value_channels = blocks.shape[2]
-        self._values = self._brick_field(self._value_channels)
+        self._values = self._brick_field(self._value_channels, self.brick_count)
         for channel in range(self._value_channels):
             values = np.ascontiguousarray(blocks[..., channel], dtype=np.float32)
             if not np.all(np.isfinite(values)) or np.any(values < 0):
@@ -298,9 +313,11 @@ class SparseSmokeScene(_OrbitScene):
     def _init_light_cache(self, data, intensities):
         # Store exactly the same light value once when all sources are achromatic.
         self._light_channels = light_cache_channels(intensities)
-        self._light_cache = self._brick_field(self._light_channels)
+        if not self._regular_brick_count:
+            return
+        self._light_cache = self._brick_field(self._light_channels, self._regular_brick_count)
 
-        locations = np.full((self.brick_count, 4), -1, dtype=np.int32)
+        locations = np.full((self._regular_brick_count, 4), -1, dtype=np.int32)
         for entity_id, entity in enumerate(data.entities):
             rows = slice(entity.first_sector, entity.end_sector)
             sector_ids, absolute_bricks = np.nonzero(data.brick_ids[rows] >= 0)
@@ -310,7 +327,7 @@ class SparseSmokeScene(_OrbitScene):
             )
             locations[brick_ids, :3] = data.sectors[rows][sector_ids] * 128 + local * 8
             locations[brick_ids, 3] = entity_id
-        self._brick_locations = ti.Vector.field(4, dtype=ti.i32, shape=self.brick_count)
+        self._brick_locations = ti.Vector.field(4, dtype=ti.i32, shape=self._regular_brick_count)
         self._brick_locations.from_numpy(locations)
 
     def update_light(self):
@@ -318,8 +335,8 @@ class SparseSmokeScene(_OrbitScene):
         if self._lighting:
             # Use short launches for desktop GPUs that enforce a kernel timeout.
             batch_size = 512
-            for first in range(0, self.brick_count, batch_size):
-                self._cache_lighting(first, min(first + batch_size, self.brick_count))
+            for first in range(0, self._regular_brick_count, batch_size):
+                self._cache_lighting(first, min(first + batch_size, self._regular_brick_count))
             ti.sync()
 
     @ti.kernel
@@ -356,22 +373,30 @@ class SparseSmokeScene(_OrbitScene):
         return sample
 
     @ti.func
-    def _cached_light(self, brick, voxel):
+    def _voxel_light(self, brick, index, voxel, entity):
         light = ti.Vector([1.0, 1.0, 1.0])
         if ti.static(self._lighting):
-            if ti.static(self._light_channels == 1):
-                light *= self._light_cache[brick, voxel][0]
-            else:
-                light = self._light_cache[brick, voxel]
+            use_cache = True
+            if ti.static(self._has_uniform_bricks):
+                use_cache = brick < self._regular_brick_count
+                if not use_cache:
+                    center = self._positions[entity] + self._rotations[entity] @ (ti.cast(voxel, ti.f32) + 0.5)
+                    light = self._sample_light(center)
+            if ti.static(self._regular_brick_count):
+                if use_cache:
+                    if ti.static(self._light_channels == 1):
+                        light *= self._light_cache[brick, index][0]
+                    else:
+                        light = self._light_cache[brick, index]
         return light
 
     @ti.func
-    def _sector_id(self, coord, bounds):
+    def _find_coord(self, coords: ti.template(), coord, bounds):
         lo, hi = bounds[0], bounds[1]
         found = -1
         while lo < hi:
             mid = lo + (hi - lo) // 2
-            other = self._sectors[mid]
+            other = coords[mid]
             if (coord == other).all():
                 found = mid
                 break
@@ -400,25 +425,36 @@ class SparseSmokeScene(_OrbitScene):
         next_sample = t
         brick, index = -1, 0
         if (sector_cell >= lower).all() and (sector_cell < upper).all():
-            sector = self._sector_id(sector_cell, self._ranges[entity])
+            sector = -1
+            if ti.static(self.sector_count):
+                sector = self._find_coord(self._sectors, sector_cell, self._ranges[entity])
+                if sector >= 0:
+                    brick_cell = voxel >> 3
+                    local_brick = brick_cell - sector_cell * 16
+                    brick = self._brick_ids[sector, local_brick.x + 16 * local_brick.y + 256 * local_brick.z]
+                    if brick < 0:
+                        next_sample += _distance_to_cell_exit(p, local_direction, brick_cell, 8)
+                    else:
+                        local_voxel = voxel - brick_cell * 8
+                        index = local_voxel.x + 8 * local_voxel.y + 64 * local_voxel.z
             if sector < 0:
-                next_sample += _distance_to_cell_exit(p, local_direction, sector_cell, 128)
-            else:
-                brick_cell = voxel >> 3
-                local_brick = brick_cell - sector_cell * 16
-                brick = self._brick_ids[sector, local_brick.x + 16 * local_brick.y + 256 * local_brick.z]
+                if ti.static(self._has_uniform_bricks):
+                    for level in range(self._uniform_ranges.shape[0]):
+                        level_range = self._uniform_ranges[level]
+                        coord = voxel >> level_range[0]
+                        found = self._find_coord(self._uniform_coords, coord, level_range.yz)
+                        if found >= 0:
+                            brick = self._uniform_rows[found]
+                            break
                 if brick < 0:
-                    next_sample += _distance_to_cell_exit(p, local_direction, brick_cell, 8)
-                else:
-                    local_voxel = voxel - brick_cell * 8
-                    index = local_voxel.x + 8 * local_voxel.y + 64 * local_voxel.z
+                    next_sample += _distance_to_cell_exit(p, local_direction, sector_cell, 128)
         else:
             box_lower = voxel_lower - ti.static(0.0 if self._interface else 1.0)
             entry, exit = intersect_box(local_origin, local_direction, box_lower, upper * 128.0, t, end)
             next_sample = end
             if entry < exit:
                 next_sample = entry
-        return next_sample, brick, index
+        return next_sample, brick, index, voxel
 
     @ti.func
     def _advance(self, t, next_sample, step):
@@ -438,7 +474,7 @@ class SparseSmokeScene(_OrbitScene):
         while t <= end and transmittance != 0.0:
             density, next_sample = 0.0, 1e30
             for entity in range(self.entity_count):
-                next_entity_sample, brick, voxel = self._lookup(origin, direction, t, 1e30, entity)
+                next_entity_sample, brick, voxel, _ = self._lookup(origin, direction, t, 1e30, entity)
                 next_sample = ti.min(next_sample, next_entity_sample)
                 if brick >= 0:
                     density += self._sample_voxel(brick, voxel, False).w
@@ -456,7 +492,7 @@ class SparseSmokeScene(_OrbitScene):
         ambient_ior = self._ior[0]
         index, next_sample = ambient_ior, 1e30
         for entity in range(self.entity_count):
-            next_entity, brick, voxel = self._lookup(origin, direction, t, 1e30, entity)
+            next_entity, brick, voxel, _ = self._lookup(origin, direction, t, 1e30, entity)
             next_sample = ti.min(next_sample,next_entity)
             if index == ambient_ior and brick >= 0:
                 index = self._ior[self._block_code(brick,voxel)]
@@ -542,7 +578,7 @@ class SparseSmokeScene(_OrbitScene):
             if ti.static(self._refractive):
                 medium = self._ior[0]
             for entity in range(self.entity_count):
-                next_entity_sample, brick, voxel = self._lookup(origin, direction, t, 1e30, entity)
+                next_entity_sample, brick, voxel, coordinates = self._lookup(origin, direction, t, 1e30, entity)
                 next_sample = ti.min(next_sample, next_entity_sample)
                 if brick >= 0:
                     material = self._sample_voxel(brick, voxel, True)
@@ -551,7 +587,7 @@ class SparseSmokeScene(_OrbitScene):
                     if ti.static(self._refractive or self._emissive):
                         code = self._block_code(brick, voxel)
                     if material.w != 0:
-                        radiance = material.xyz * self._cached_light(brick, voxel)
+                        radiance = material.xyz * self._voxel_light(brick, voxel, coordinates, entity)
                         if ti.static(self._emissive):
                             radiance += self._emission[code]
                         lit_color += radiance * material.w
