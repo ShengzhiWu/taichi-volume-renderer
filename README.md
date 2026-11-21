@@ -83,11 +83,9 @@ The converter preserves occupied voxels, original block codes, packed surface em
 
 #### Sparse viewer options
 
-Use `--camera saved` when the file contains a camera pose, or omit it for an overview. Run `python -m examples.sparse_smoke --help` to list all command-line options. Use `--gamma` to adjust material colors and `--step 0.5` for half-voxel camera steps. See [Lighting](#lighting) for the lighting options.
+Use `--camera saved` when the file contains a camera pose, or omit it for an overview. Run `python -m examples.sparse_smoke --help` to list all command-line options.
 
-The sparse command-line viewer defaults to Vulkan and GGUI. Use `--no-ggui` to select the standard window, which is Tk on Windows. Choosing a non-Vulkan compute backend also selects the standard window.
-
-The sparse CLI selects a [refraction mode](#refraction) with `--refraction-mode gradient` or `--refraction-mode interface`. Indexed VXB materials can supply their own `ior`. The indexed Python API also accepts a 65,536-element `index_of_refraction=` table for scenes loaded from other sources.
+Indexed VXB materials can supply their own `ior`. The indexed Python API also accepts a 65,536-element `index_of_refraction=` table for scenes loaded from other sources.
 
 For an indexed VXB interface, a nonzero world-space normal supplied as `normal_x`, `normal_y`, and `normal_z` overrides the estimate. The ray first tries the destination refractive material, then the incident refractive material. Indexed VXB also supports `emission_r`, `emission_g`, and `emission_b` as linear outgoing radiance added after ordinary lighting.
 
@@ -203,6 +201,12 @@ The window backend affects how quickly the app responds to keyboard and mouse in
 | GUI | Input lag, stuttering when dragging the window, and UI freezes. |
 | GGUI | Responsive interaction and about three times Tk's frame rate in testing. |
 | Tk | Responsive interaction, with additional overhead from copying frames to the CPU. |
+
+The sparse command-line viewer defaults to Vulkan and GGUI. Use `--no-ggui` to select the standard window, which is Tk on Windows. Choosing a non-Vulkan compute backend also selects the standard window. In Python, use the `ggui` argument to `DisplayWindow.show()` to select the window backend.
+
+Set `gamma` in Python or use `--gamma` on the sparse command line to adjust material colors. For half-voxel camera steps, set `ray_tracing_step_size_factor=0.5` for dense scenes or `step_length=0.5` for sparse scenes in Python. The sparse command-line equivalent is `--step 0.5`.
+
+Select a [refraction mode](#refraction) with `refraction_mode="gradient"` or `refraction_mode="interface"` in Python. The sparse command line accepts `--refraction-mode gradient` or `--refraction-mode interface`. See [Lighting](#lighting) for light controls.
 
 ## TODOs
 
