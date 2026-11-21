@@ -7,6 +7,7 @@ import taichi as ti
 
 from . import _OrbitScene
 from .cxw import load_cxw, packed_color_materials
+from ._ground import _thicken_ground
 from .sparse_data import SparseVolumeData, index_brick_values
 from ._smoke import (INTERFACE_ENTRY_OFFSET, REFRACTIVE_MAX_STEPS, ambient_light_parameters, apply_rgb_gamma,
                      composite_sample, crosses_refractive_interface, directional_light_parameters,
@@ -29,28 +30,31 @@ class SparseSmokeScene(_OrbitScene):
     """Static sparse volume. Initialize Taichi before construction."""
 
     @classmethod
-    def from_cxw(cls, path, *, gamma=1.0, **options):
-        return cls(load_cxw(path), gamma=gamma, **options)
+    def from_cxw(cls, path, *, gamma=1.0, thicken_ground=0, **options):
+        data = _thicken_ground(load_cxw(path), thicken_ground)
+        return cls(data, gamma=gamma, **options)
 
     @classmethod
-    def from_file(cls, path, *, grid_name=None, **options):
+    def from_file(cls, path, *, grid_name=None, thicken_ground=0, **options):
         suffix = Path(path).suffix.lower()
         if grid_name is not None and suffix != ".vdb":
             raise ValueError("grid_name applies only to VDB files")
         if suffix == ".cxw":
-            return cls.from_cxw(path, **options)
+            return cls.from_cxw(path, thicken_ground=thicken_ground, **options)
         if suffix == ".vxb":
             from .vxb_scene import load_vxb_volume
 
             if any(name in options for name in ("materials", "index_of_refraction", "interface_normals", "emission")):
                 raise ValueError("VXB supplies material values and optical properties from the file")
             data, palette, indices, normals, emission = load_vxb_volume(path, density=options.get("density", .22))
+            data = _thicken_ground(data, thicken_ground)
             return cls(data, materials=palette, index_of_refraction=indices, interface_normals=normals,
                        emission=emission, **options)
         if suffix == ".vdb":
             from .vdb import load_vdb
 
-            return cls(load_vdb(path, grid_name=grid_name), **options)
+            data = _thicken_ground(load_vdb(path, grid_name=grid_name), thicken_ground)
+            return cls(data, **options)
         raise ValueError("Expected a .cxw, .vdb, or .vxb file")
 
     def __init__(

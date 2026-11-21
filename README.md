@@ -83,6 +83,8 @@ The converter preserves occupied voxels, original block codes, packed surface em
 
 #### Renderer Details
 
+Use `--thicken-ground N` or `thicken_ground=N` in `DisplayWindow.from_file()` to extend the lowest non-air voxel of each column downward by `N` voxels. The grid needs an axis parallel to world Z. The default is `0` (disabled). Ground thickening can significantly slow loading for large scenes.
+
 Use `--camera saved` when the file contains a camera pose, or omit it for an overview. Run `python -m examples.sparse_smoke --help` to list all command-line options.
 
 Indexed VXB materials can supply their own `ior`. The indexed Python API also accepts a 65536-element `index_of_refraction=` table for scenes loaded from other sources.

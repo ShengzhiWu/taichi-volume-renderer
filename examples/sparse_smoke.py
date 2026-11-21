@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--density", type=float, default=0.22, help="Density assigned to occupied CXW voxels")
     parser.add_argument("--storage", choices=("auto", "indexed", "direct"), default="auto",
                         help="Choose storage from the file (default), or force indexed or direct values")
+    parser.add_argument("--thicken-ground", type=int, default=0, metavar="N",
+                        help="Extend the lowest non-air voxel in each vertical column downward by N voxels")
     parser.add_argument("--gamma", type=float, default=1.0,
                         help="Apply x^gamma to each loaded RGB component (default: 1)")
     parser.add_argument("--refraction-mode", choices=("gradient", "interface"),
@@ -65,7 +67,7 @@ def main():
             args.path, resolution=args.resolution, taichi_arch=getattr(ti, arch),
             camera=args.camera, density=args.density, gamma=args.gamma, storage=args.storage,
             grid_name=args.grid, step_length=args.step, max_steps=args.max_steps,
-            lighting=args.lighting, ambient_light=args.ambient_light,
+            thicken_ground=args.thicken_ground, lighting=args.lighting, ambient_light=args.ambient_light,
             # Match a point light of intensity 200 at a distance of 5 from the scene center.
             directional_light=((0, 0, 1), (8, 8, 8)) if args.light_type == "directional" else None,
             **optics,
