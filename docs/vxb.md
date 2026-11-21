@@ -37,7 +37,7 @@ The current sparse renderer accepts the basic volume fields in either mode. Inde
 | `normal_x`, `normal_y`, `normal_z` | World-space interface normal. A zero vector uses the renderer's estimate. |
 | `emission_r`, `emission_g`, `emission_b` | Linear outgoing radiance added after ordinary lighting. This can carry baked caustics. |
 
-These rendering fields use `f32`. The current importer accepts up to 65,536 indexed material rows and adapts the file hierarchy to the renderer's 128/8 storage. This expands uniform bricks in memory, while the reference codec retains their compact representation.
+These rendering fields use `f32`. The current importer accepts up to 65536 indexed material rows and adapts the file hierarchy to the renderer's 128/8 storage. This expands uniform bricks in memory, while the reference codec retains their compact representation.
 
 ## Convert an existing CXW scene
 

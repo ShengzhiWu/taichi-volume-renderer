@@ -31,7 +31,7 @@ Volume rendering provides an impressive capability to display faintly visible ob
 
 The sparse renderer groups 8³ voxel bricks into 128³ sectors and allocates voxel data only for occupied bricks. During ray marching, a missing sector lets the ray skip directly toward that sector's exit. Inside an allocated sector, the ray can skip missing bricks the same way.
 
-The interactive GPU viewer has rendered a scene spanning **4,224 × 3,840 × 640 voxels**. Its bounding box covers over 10 billion voxel positions, with about 726,000 allocated bricks. Frame rate varies with the hardware, viewport size, and rendering settings.
+The interactive GPU viewer has rendered a scene spanning **4224 × 3840 × 640 voxels**. Its bounding box covers over 10 billion voxel positions, with about 726000 allocated bricks. Frame rate varies with the hardware, viewport size, and rendering settings.
 
 #### OpenVDB
 
@@ -85,7 +85,7 @@ The converter preserves occupied voxels, original block codes, packed surface em
 
 Use `--camera saved` when the file contains a camera pose, or omit it for an overview. Run `python -m examples.sparse_smoke --help` to list all command-line options.
 
-Indexed VXB materials can supply their own `ior`. The indexed Python API also accepts a 65,536-element `index_of_refraction=` table for scenes loaded from other sources.
+Indexed VXB materials can supply their own `ior`. The indexed Python API also accepts a 65536-element `index_of_refraction=` table for scenes loaded from other sources.
 
 For an indexed VXB interface, a nonzero world-space normal supplied as `normal_x`, `normal_y`, and `normal_z` overrides the estimate. The ray first tries the destination refractive material, then the incident refractive material. Indexed VXB also supports `emission_r`, `emission_g`, and `emission_b` as linear outgoing radiance added after ordinary lighting.
 
@@ -104,9 +104,9 @@ The VXB importer adapts the file's hierarchy to the renderer's sector and brick 
 | `indexed` | A 16-bit code into a `(65536, 4)` RGB-density material table. Code zero is air. |
 | `direct` | A float32 density with uniform white color, or float32 RGB plus density. |
 
-The renderer reads `r`, `g`, `b`, and `density` from VXB and supports up to 65,536 material rows in indexed mode.
+The renderer reads `r`, `g`, `b`, and `density` from VXB and supports up to 65536 material rows in indexed mode.
 
-Use `--storage direct` to force float storage or `--storage indexed` to force material indices. Indexed storage reserves code 0 for air and fails if there are more than 65,535 distinct non-air values. The same options are available as `storage=` in `DisplayWindow.from_file()`.
+Use `--storage direct` to force float storage or `--storage indexed` to force material indices. Indexed storage reserves code 0 for air and fails if there are more than 65535 distinct non-air values. The same options are available as `storage=` in `DisplayWindow.from_file()`.
 
 Other importers can pass float densities shaped `(brick_count, 512)` or float RGB-density values shaped `(brick_count, 512, 4)` as `SparseVolumeData.blocks`.
 
@@ -179,7 +179,7 @@ Supplying an index of refraction (IOR) enables refraction in interface mode by d
 
 For dense `DisplayWindow(...)` and `plot_volume()`, pass an `index_of_refraction` field with the same shape as the density field. Sparse inputs supply IOR through the material data or the indexed Python API described under [Sparse Scenes](#sparse-scenes).
 
-With refraction enabled, camera rays are limited to 10,000 steps by default. Straight rays have no default step limit. To set the limit explicitly, use `ray_tracing_max_steps=N` for dense scenes or `max_steps=N` for sparse scenes in Python. The sparse CLI uses `--max-steps N`. The sparse renderer counts steps skipped through empty space toward the limit.
+With refraction enabled, camera rays are limited to 10000 steps by default. Straight rays have no default step limit. To set the limit explicitly, use `ray_tracing_max_steps=N` for dense scenes or `max_steps=N` for sparse scenes in Python. The sparse CLI uses `--max-steps N`. The sparse renderer counts steps skipped through empty space toward the limit.
 
 The examples pictured below explicitly use `refraction_mode="gradient"` to reproduce the illustrated continuous-gradient behavior. Run the glass ball with `python -m examples.refraction`, the fluid example with `python -m examples.pbf3d`, or the mirage with `python -m examples.mirage`.
 
