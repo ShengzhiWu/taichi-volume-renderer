@@ -138,6 +138,14 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 [VXB v1](docs/vxb-v1.md) specifies custom material fields, configurable brick levels, and uniform bricks. The file selects bit-packed indices with a material table or direct material values. The [reference codec](taichi_volume_renderer/vxb.py) uses the Python standard library and preserves the brick hierarchy on load.
 
+Convert a packed-color CXW v7/v8 file with one untransformed occupied entity from the repository root.
+
+```bash
+python -m scripts.cxw_to_vxb "path/to/world.cxw" "path/to/world.vxb"
+```
+
+The converter preserves occupied voxels, original block codes, packed surface emission, and the saved camera pose. It uses the CXW importer's RGB and density defaults for the renderable material values. CXW previews and auxiliary slots are omitted.
+
 Open VXB files with `DisplayWindow.from_file()` or the sparse viewer:
 
 ```bash
