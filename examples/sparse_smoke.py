@@ -1,4 +1,4 @@
-"""Render a CXW or OpenVDB scene with the sparse smoke ray marcher."""
+"""Render a CXW, VXB, or OpenVDB scene with the sparse smoke ray marcher."""
 
 import argparse
 from pathlib import Path
@@ -12,7 +12,7 @@ from taichi_volume_renderer.cxw import packed_color_materials
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("path", help="Path to a packed-color CXW v7/v8 or OpenVDB file")
+    parser.add_argument("path", help="Path to a packed-color CXW v7/v8, VXB, or OpenVDB file")
     parser.add_argument("--grid", help="Density grid name for VDB input")
     parser.add_argument("--camera", choices=("overview", "saved"), default="overview")
     parser.add_argument("--arch", choices=("gpu", "cuda", "vulkan", "cpu"))
@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--gamma", type=float, default=1.0,
                         help="Apply x^gamma to each loaded RGB component (default: 1)")
     parser.add_argument("--refraction-mode", choices=("gradient", "interface"),
-                        help="Enable refraction for packed CXW water (palette ID 3)")
+                        help="Select VXB refraction mode or enable refraction for packed CXW water (ID 3)")
     parser.add_argument("--step", type=float, default=1.0, help="Camera ray step in voxel units")
     parser.add_argument("--max-steps", type=int,
                         help="Camera ray step limit (default: 10000 with refraction, unlimited otherwise)")
@@ -50,13 +50,16 @@ def main():
     arch = args.arch or ("vulkan" if ggui else "gpu")
     optics = {}
     if args.refraction_mode is not None:
-        if Path(args.path).suffix.lower() != ".cxw":
-            parser.error("--refraction-mode is for packed CXW water")
-        indices = np.ones(65536, dtype=np.float32)
-        indices[3] = 1.33
-        materials = packed_color_materials(args.density)
-        materials[3, 3] = 0.0024
-        optics = dict(materials=materials, index_of_refraction=indices, refraction_mode=args.refraction_mode)
+        optics["refraction_mode"] = args.refraction_mode
+        suffix = Path(args.path).suffix.lower()
+        if suffix == ".cxw":
+            indices = np.ones(65536, dtype=np.float32)
+            indices[3] = 1.33
+            materials = packed_color_materials(args.density)
+            materials[3, 3] = 0.0024
+            optics.update(materials=materials, index_of_refraction=indices)
+        elif suffix != ".vxb":
+            parser.error("--refraction-mode applies to CXW and VXB files")
     try:
         window = DisplayWindow.from_file(
             args.path, resolution=args.resolution, taichi_arch=getattr(ti, arch),

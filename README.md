@@ -131,6 +131,16 @@ The importer accepts nonnegative `FloatGrid` densities with zero background and 
 
 [VXB v1](docs/vxb-v1.md) specifies custom material fields, configurable brick levels, and uniform bricks. The file selects bit-packed indices with a material table or direct material values. The [reference codec](taichi_volume_renderer/vxb.py) uses the Python standard library and preserves the brick hierarchy on load.
 
+Open VXB files with `DisplayWindow.from_file()` or the sparse viewer:
+
+```bash
+python -m examples.sparse_smoke "path/to/world.vxb" --camera saved
+```
+
+Use `--camera saved` when the file contains a camera pose. The renderer reads `r`, `g`, `b`, and `density`. Indexed VXB materials also support `ior`, optional `normal_x`, `normal_y`, and `normal_z`, and optional `emission_r`, `emission_g`, and `emission_b`. Emission values are linear outgoing radiance added after albedo and lighting have been multiplied.
+
+In interface mode a nonzero Z-up normal overrides the estimated normal at an IOR transition. The ray uses the destination refractive material's normal when supplied, then the incident refractive material's normal, then the estimate. The importer adapts VXB bricks to the renderer's existing 128/8 storage, expanding uniform bricks in memory, and supports up to 65,536 rows in indexed mode.
+
 ### Refraction
 
 Dense and sparse rendering default to `refraction_mode="interface"` when an index of refraction is supplied. Both use the same normal estimate, refraction and total internal reflection rules. After 19 interface interactions, the ray continues in its current direction. Use `refraction_mode="gradient"` for a continuous index field. For dense `DisplayWindow` and `plot_volume`, pass an `index_of_refraction` field with the same shape as the density field. Both refraction modes default to 10,000 ray steps. Straight rays have no default step limit. Use `ray_tracing_max_steps=N` to set the dense step limit explicitly.

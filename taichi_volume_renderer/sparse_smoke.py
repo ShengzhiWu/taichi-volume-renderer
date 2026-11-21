@@ -35,15 +35,23 @@ class SparseSmokeScene(_OrbitScene):
     @classmethod
     def from_file(cls, path, *, grid_name=None, **options):
         suffix = Path(path).suffix.lower()
+        if grid_name is not None and suffix != ".vdb":
+            raise ValueError("grid_name applies only to VDB files")
         if suffix == ".cxw":
-            if grid_name is not None:
-                raise ValueError("grid_name applies only to VDB files")
             return cls.from_cxw(path, **options)
+        if suffix == ".vxb":
+            from .vxb_scene import load_vxb_volume
+
+            if any(name in options for name in ("materials", "index_of_refraction", "interface_normals", "emission")):
+                raise ValueError("VXB supplies material values and optical properties from the file")
+            data, palette, indices, normals, emission = load_vxb_volume(path, density=options.get("density", .22))
+            return cls(data, materials=palette, index_of_refraction=indices, interface_normals=normals,
+                       emission=emission, **options)
         if suffix == ".vdb":
             from .vdb import load_vdb
 
             return cls(load_vdb(path, grid_name=grid_name), **options)
-        raise ValueError("Expected a .cxw or .vdb file")
+        raise ValueError("Expected a .cxw, .vdb, or .vxb file")
 
     def __init__(
         self, data: SparseVolumeData, background=(0.2, 0.2, 0.2), camera="overview",
@@ -51,7 +59,7 @@ class SparseSmokeScene(_OrbitScene):
         lighting=True, point_lights_pos=None, point_lights_intensity=None,
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
-        index_of_refraction=None, refraction_mode="interface",
+        index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -60,6 +68,8 @@ class SparseSmokeScene(_OrbitScene):
         index_of_refraction is an optional 65,536-entry lookup table for indexed storage.
         Entry 0 is the ambient medium, including air outside allocated bricks.
         refraction_mode selects the dense gradient step or discrete interface optics.
+        Nonzero Z-up interface_normals override the estimated normal in interface mode.
+        emission is an optional 65,536-entry RGB table of linear outgoing radiance.
         """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
             if not np.isfinite(value) or value <= 0:
@@ -83,6 +93,8 @@ class SparseSmokeScene(_OrbitScene):
             raise ValueError("refraction_mode must be 'gradient' or 'interface'")
         self._refractive = index_of_refraction is not None
         self._interface = self._refractive and refraction_mode == "interface"
+        self._use_interface_normals = self._interface and interface_normals is not None
+        self._emissive = emission is not None
         default_max_steps = REFRACTIVE_MAX_STEPS if self._refractive else 0
         self._max_steps = default_max_steps if max_steps is None else int(max_steps)
         super().__init__(background)
@@ -94,6 +106,14 @@ class SparseSmokeScene(_OrbitScene):
         self._sectors.from_numpy(data.sectors)
         self._brick_ids.from_numpy(data.brick_ids)
         self._load_voxels(data.blocks, materials, density, gamma, storage)
+        if self._emissive:
+            if self._direct or data.blocks.dtype != np.uint16:
+                raise ValueError("Emission requires indexed uint16 material codes")
+            emitted = np.asarray(emission, dtype=np.float32)
+            if (emitted.shape != (65536, 3) or not np.all(np.isfinite(emitted)) or np.any(emitted < 0.)):
+                raise ValueError("Expected one finite, nonnegative RGB emission value per material code")
+            self._emission = ti.Vector.field(3, dtype=ti.f32, shape=65536)
+            self._emission.from_numpy(np.ascontiguousarray(emitted))
         if self._refractive:
             if self._direct or data.blocks.dtype != np.uint16:
                 raise ValueError("Refraction requires indexed uint16 material codes")
@@ -102,6 +122,15 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError("Expected a positive finite index of refraction for each material code")
             self._ior = ti.field(ti.f32,shape=65536)
             self._ior.from_numpy(indices)
+        if self._use_interface_normals:
+            normals = np.array(interface_normals, dtype=np.float32)
+            if normals.shape != (65536, 3) or not np.all(np.isfinite(normals)):
+                raise ValueError("Expected one finite interface normal per material code")
+            lengths = np.linalg.norm(normals.astype(np.float64), axis=1)
+            present = lengths != 0.
+            normals[present] /= lengths[present, None]
+            self._interface_normals = ti.Vector.field(3, dtype=ti.f32, shape=65536)
+            self._interface_normals.from_numpy(normals)
 
         self._positions = ti.Vector.field(3, dtype=ti.f32, shape=self.entity_count)
         self._rotations = ti.Matrix.field(3, 3, dtype=ti.f32, shape=self.entity_count)
@@ -471,7 +500,7 @@ class SparseSmokeScene(_OrbitScene):
         entry, end = self._volume_interval(origin, direction)
         index = ti.ceil(entry / self._step)
         previous_steps = 0.
-        previous_medium, interfaces = 1., 0
+        previous_medium, previous_code, interfaces = 1., 0, 0
         lower, upper = origin, origin
         if ti.static(self._refractive):
             half_extent = self._world_extent[None] * .5
@@ -498,6 +527,7 @@ class SparseSmokeScene(_OrbitScene):
             density, next_sample = 0.0, 1e30
             lit_color = ti.Vector.zero(ti.f32, 3)
             medium = 1.
+            medium_code = 0
             has_brick = False
             if ti.static(self._refractive):
                 medium = self._ior[0]
@@ -507,19 +537,32 @@ class SparseSmokeScene(_OrbitScene):
                 if brick >= 0:
                     material = self._sample_voxel(brick, voxel, True)
                     density += material.w
-                    if material.w != 0:
-                        lit_color += material.xyz * self._cached_light(brick, voxel) * material.w
-                    if ti.static(self._refractive):
+                    code = 0
+                    if ti.static(self._refractive or self._emissive):
                         code = self._block_code(brick, voxel)
+                    if material.w != 0:
+                        radiance = material.xyz * self._cached_light(brick, voxel)
+                        if ti.static(self._emissive):
+                            radiance += self._emission[code]
+                        lit_color += radiance * material.w
+                    if ti.static(self._refractive):
                         if medium == self._ior[0]:
                             medium = self._ior[code]
+                            if ti.static(self._use_interface_normals):
+                                medium_code = code
                         if ti.static(self._interface):
                             has_brick = True
 
             if ti.static(self._interface):
                 if crosses_refractive_interface(previous_medium, medium, self._ior[0], density != 0., interfaces):
+                    normal = ti.Vector.zero(ti.f32, 3)
+                    if ti.static(self._use_interface_normals):
+                        if medium != self._ior[0]:
+                            normal = self._interface_normals[medium_code]
+                        if normal.norm_sqr() == 0. and previous_medium != self._ior[0]:
+                            normal = self._interface_normals[previous_code]
                     origin, direction, fresnel, reflected = follow_refractive_interface(
-                        origin, direction, previous_medium, medium, self._step, 1., self._ior_at,
+                        origin, direction, previous_medium, medium, self._step, 1., normal, self._ior_at,
                     )
                     interfaces += 1
                     if reflected:
@@ -529,6 +572,8 @@ class SparseSmokeScene(_OrbitScene):
                     # The empty-region distance was computed along the incident direction.
                     next_sample = 0.
                 previous_medium = medium
+                if ti.static(self._use_interface_normals):
+                    previous_code = medium_code
 
             if next_sample > end and ti.static(not self._refractive):
                 break

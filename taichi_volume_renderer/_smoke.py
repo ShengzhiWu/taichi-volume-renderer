@@ -114,20 +114,22 @@ def crosses_refractive_interface(before, after, ambient, occupied, interfaces):
 
 
 @ti.func
-def follow_refractive_interface(pos, direction, before, after, step, voxel_size, sample_ior: ti.template()):
-    point = pos - direction * (.5 * step)
-    gradient = ti.Vector.zero(ti.f32, 3)
-    for sample in range(6):
-        axis = sample // 2
-        wide = sample % 2 != 0
-        radius = 2.576 if wide else 1.12
-        weight = .58 if wide else 1.
-        offset = ti.Vector.zero(ti.f32, 3)
-        offset[axis] = radius * voxel_size
-        gradient[axis] += weight * (sample_ior(point + offset) - sample_ior(point - offset))
-    normal = -direction
-    if gradient.norm_sqr() > 0.:
-        normal = gradient.normalized()
+def follow_refractive_interface(
+        pos, direction, before, after, step, voxel_size, normal, sample_ior: ti.template()):
+    if normal.norm_sqr() == 0.:
+        point = pos - direction * (.5 * step)
+        gradient = ti.Vector.zero(ti.f32, 3)
+        for sample in range(6):
+            axis = sample // 2
+            wide = sample % 2 != 0
+            radius = 2.576 if wide else 1.12
+            weight = .58 if wide else 1.
+            offset = ti.Vector.zero(ti.f32, 3)
+            offset[axis] = radius * voxel_size
+            gradient[axis] += weight * (sample_ior(point + offset) - sample_ior(point - offset))
+        normal = -direction
+        if gradient.norm_sqr() > 0.:
+            normal = gradient.normalized()
     bent, fresnel, reflected = refract_at_interface(direction, normal, before, after)
     if reflected:
         pos -= direction * step
