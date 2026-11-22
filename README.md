@@ -167,7 +167,7 @@ scene = SparseSmokeScene(data, materials=materials, index_of_refraction=ior,
                          interface_normals=normals, emission=emission, directional_light=sun)
 ```
 
-The baker requires one indexed entity with refractive indices. Receivers must use ordinary bricks. For pools, pass `submerged_only=True` to keep only hits that reach a submerged surface without leaving the water. Increase `photons` to reduce sampling noise. Set `material_clusters=512` to cluster reflectance and emission into representative pairs. This option requires scikit-learn, available through the `caustics` extra. Baking raises an error if the material indices run out.
+The baker requires one indexed entity with refractive indices. Receivers must use ordinary bricks. Increase `photons` to reduce sampling noise. Set `material_clusters=512` to cluster reflectance and emission into representative pairs. This option requires scikit-learn, available through the `caustics` extra. Baking raises an error if the material indices run out.
 
 ### Off-Screen Rendering
 

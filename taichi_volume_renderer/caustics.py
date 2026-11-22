@@ -15,7 +15,7 @@ from .sparse_smoke import SparseSmokeScene, _upload_lookup_field
 @ti.kernel
 def _trace(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, ndim=1),
            direction: ti.math.vec3, hits: ti.types.ndarray(dtype=ti.math.ivec2, ndim=1),
-           weights: ti.types.ndarray(dtype=ti.f32, ndim=1), submerged_only: ti.template()):
+           weights: ti.types.ndarray(dtype=ti.f32, ndim=1)):
     for photon in origins:
         hits[photon] = ti.Vector([-1, -1])
         ray = direction
@@ -39,17 +39,10 @@ def _trace(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, n
                 medium = scene._ior[code]
                 occupied = code != 0 and scene._materials[code].w > 0.
                 if occupied and medium == ambient:
-                    receives = refracted
-                    if ti.static(submerged_only):
-                        above = pos + ti.Vector([0., 0., 1.])
-                        receives = receives and previous != ambient and scene._ior_at(above) != ambient
-                    if receives:
+                    if refracted:
                         hits[photon] = ti.Vector([brick, voxel])
                         weights[photon] = power
                     break
-                if ti.static(submerged_only):
-                    if refracted and medium == ambient:
-                        break
                 if crosses_refractive_interface(previous, medium, ambient, occupied, interfaces):
                     normal = ti.Vector.zero(ti.f32, 3)
                     if ti.static(scene._use_interface_normals):
@@ -85,7 +78,7 @@ def _stratified_samples(count, seed):
     return samples
 
 
-def _gather_hits(data, materials, ior, normals, direction, count, step, seed, submerged_only=False):
+def _gather_hits(data, materials, ior, normals, direction, count, step, seed):
     entity, = data.entities
     corners = np.array(list(product(*zip(entity.lower, entity.upper))))
     corners = corners @ entity.rotation.T + entity.position
@@ -130,7 +123,7 @@ def _gather_hits(data, materials, ior, normals, direction, count, step, seed, su
     try:
         for field, array in uploads:
             field.from_numpy(array)
-        _trace(scene, origins, direction, hits, weights, submerged_only)
+        _trace(scene, origins, direction, hits, weights)
         ti.sync()
     finally:
         tree.destroy()
@@ -140,13 +133,12 @@ def _gather_hits(data, materials, ior, normals, direction, count, step, seed, su
 
 def bake_caustics(data, materials, index_of_refraction, directional_light, *,
                   interface_normals=None, emission=None, photons=100000, step_length=0.5, seed=0,
-                  material_clusters=None, submerged_only=False):
+                  material_clusters=None):
     """Return renderer-ready data, materials, IOR, normals and emission after baking.
 
     Initialize Taichi first. The scene must have one indexed entity. Each photon
     deposits at its first non-refractive occupied voxel after refraction.
     Compact uniform bricks can refract light but cannot receive this bake.
-    Set submerged_only for receivers under a refractive medium in Z-up scenes.
     Set material_clusters to cluster baked RGB reflectance and emission.
     """
     if (len(data.entities) != 1 or data.blocks.dtype != np.uint16
@@ -174,7 +166,7 @@ def bake_caustics(data, materials, index_of_refraction, directional_light, *,
     emission = (np.zeros((65536, 3), dtype=np.float32) if emission is None
                 else _material_table(emission, (65536, 3)))
     hits, weights, area = _gather_hits(
-        data, materials, ior, normals, -toward_light, photons, float(step_length), seed, submerged_only,
+        data, materials, ior, normals, -toward_light, photons, float(step_length), seed,
     )
     if np.any(hits[:, 0] >= len(data.blocks) - len(data.uniform_bricks)):
         raise ValueError("Caustic receivers must use ordinary sparse bricks")
