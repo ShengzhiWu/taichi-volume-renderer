@@ -52,8 +52,10 @@ class SparseSmokeScene(_OrbitScene):
         return cls(data, gamma=gamma, **options)
 
     @classmethod
-    def from_file(cls, path, *, grid_name=None, thicken_ground=0, **options):
+    def from_file(cls, path, *, grid_name=None, thicken_ground=0, caustic_photon_density=None, **options):
         suffix = Path(path).suffix.lower()
+        if caustic_photon_density is not None and suffix != ".vxb":
+            raise ValueError("Load-time caustic baking requires a VXB file")
         if grid_name is not None and suffix != ".vdb":
             raise ValueError("grid_name applies only to VDB files")
         if suffix == ".cxw":
@@ -65,6 +67,18 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError("VXB supplies material values and optical properties from the file")
             data, palette, indices, normals, emission = load_vxb_volume(path, density=options.get("density", .22))
             data = _thicken_ground(data, thicken_ground)
+            if caustic_photon_density is not None:
+                from .caustics import bake_caustics
+
+                light = options.get("directional_light")
+                if light is None or indices is None:
+                    raise ValueError("Caustic baking requires refractive VXB materials and a directional light")
+                gamma = options.pop("gamma", 1.)
+                palette[:, :3] = apply_rgb_gamma(palette[:, :3], gamma)
+                data, palette, indices, normals, emission = bake_caustics(
+                    data, palette, indices, light, interface_normals=normals, emission=emission,
+                    photon_density=caustic_photon_density, material_clusters=512,
+                )
             return cls(data, materials=palette, index_of_refraction=indices, interface_normals=normals,
                        emission=emission, **options)
         if suffix == ".vdb":

@@ -1,12 +1,14 @@
 """Render a CXW, VXB, or OpenVDB scene with the sparse smoke ray marcher."""
 
 import argparse
+import logging
 from pathlib import Path
 
 import numpy as np
 import taichi as ti
 
 from taichi_volume_renderer import DisplayWindow
+from taichi_volume_renderer.caustics import DEFAULT_PHOTON_DENSITY
 from taichi_volume_renderer.cxw import packed_color_materials
 
 
@@ -29,6 +31,8 @@ def main():
                         help="Choose storage from the file (default), or force indexed or direct values")
     parser.add_argument("--thicken-ground", type=int, default=0, metavar="N",
                         help="Extend the lowest non-air voxel in each vertical column downward by N voxels")
+    parser.add_argument("--caustic-photon-density", type=float, nargs="?", const=DEFAULT_PHOTON_DENSITY, metavar="N",
+                        help=f"Bake VXB caustics with N photons per projected square voxel (default {DEFAULT_PHOTON_DENSITY} when enabled)")
     parser.add_argument("--gamma", type=float, default=1.0,
                         help="Apply x^gamma to each loaded RGB component (default: 1)")
     parser.add_argument("--refraction-mode", choices=("gradient", "interface"),
@@ -46,6 +50,8 @@ def main():
                         metavar=("R", "G", "B"), help="Unshadowed ambient RGB intensity (default: 0 0 0)")
     parser.add_argument("--fly", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.caustic_photon_density is not None:
+        logging.basicConfig(level=logging.INFO)
     ggui = args.ggui if args.ggui is not None else args.arch in (None, "vulkan")
     if ggui and args.arch not in (None, "vulkan"):
         parser.error("--ggui requires --arch vulkan")
@@ -67,6 +73,7 @@ def main():
             args.path, resolution=args.resolution, taichi_arch=getattr(ti, arch),
             camera=args.camera, density=args.density, gamma=args.gamma, storage=args.storage,
             grid_name=args.grid, step_length=args.step, max_steps=args.max_steps,
+            caustic_photon_density=args.caustic_photon_density,
             thicken_ground=args.thicken_ground, lighting=args.lighting, ambient_light=args.ambient_light,
             # Match a point light of intensity 200 at a distance of 5 from the scene center.
             directional_light=((0, 0, 1), (8, 8, 8)) if args.light_type == "directional" else None,

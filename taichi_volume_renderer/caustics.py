@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 from itertools import product
+import logging
+import math
 
 import numpy as np
 import taichi as ti
@@ -10,6 +12,9 @@ from ._smoke import (INTERFACE_ENTRY_OFFSET, REFRACTIVE_MAX_STEPS,
                      crosses_refractive_interface, directional_light_parameters,
                      follow_refractive_interface, intersect_box)
 from .sparse_smoke import SparseSmokeScene, _upload_lookup_field
+
+
+DEFAULT_PHOTON_DENSITY = 6
 
 
 @ti.kernel
@@ -78,7 +83,7 @@ def _stratified_samples(count, seed):
     return samples
 
 
-def _gather_hits(data, materials, ior, normals, direction, count, step, seed):
+def _gather_hits(data, materials, ior, normals, direction, photon_density, step, seed):
     entity, = data.entities
     corners = np.array(list(product(*zip(entity.lower, entity.upper))))
     corners = corners @ entity.rotation.T + entity.position
@@ -91,6 +96,12 @@ def _gather_hits(data, materials, ior, normals, direction, count, step, seed):
     v = np.cross(direction, u)
     projection = corners @ np.stack((u, v)).T
     start, end = projection.min(axis=0), projection.max(axis=0)
+    area = float(np.prod(end - start))
+    estimate = area * photon_density
+    if not math.isfinite(estimate) or estimate > np.iinfo(np.int32).max:
+        raise ValueError("Projected caustic photon count exceeds the supported range")
+    count = max(1, math.ceil(estimate))
+    logging.getLogger(__name__).info("Tracing %d photons across %.2f voxel²", count, area)
     plane = (corners @ direction).min() - 1.
     samples = start + _stratified_samples(count, seed) * (end - start)
     origins = (samples @ np.stack((u, v)) + plane * direction).astype(np.float32)
@@ -128,26 +139,28 @@ def _gather_hits(data, materials, ior, normals, direction, count, step, seed):
     finally:
         tree.destroy()
     valid = hits[:, 0] >= 0
-    return hits[valid], weights[valid], np.prod(end - start) / count
+    return hits[valid], weights[valid], area / count
 
 
 def bake_caustics(data, materials, index_of_refraction, directional_light, *,
-                  interface_normals=None, emission=None, photons=100000, step_length=0.5, seed=0,
-                  material_clusters=None):
+                  interface_normals=None, emission=None, photon_density=DEFAULT_PHOTON_DENSITY,
+                  step_length=0.5, seed=0, material_clusters=None):
     """Return renderer-ready data, materials, IOR, normals and emission after baking.
 
     Initialize Taichi first. The scene must have one indexed entity. Each photon
     deposits at its first non-refractive occupied voxel after refraction.
     Compact uniform bricks can refract light but cannot receive this bake.
+    The photon count is derived from the projected area and photon_density,
+    which defaults to six photons per square voxel.
     Set material_clusters to cluster baked RGB reflectance and emission.
     """
     if (len(data.entities) != 1 or data.blocks.dtype != np.uint16
             or data.blocks.ndim != 2 or data.blocks.shape[1] != 512 or not len(data.blocks)):
         raise ValueError("Caustic baking requires a single indexed sparse entity")
-    if (isinstance(photons, (bool, np.bool_)) or not isinstance(photons, (int, np.integer))
-            or not 0 < photons <= np.iinfo(np.int32).max
-            or not np.isfinite(step_length) or step_length <= 0):
-        raise ValueError("Caustic baking requires a positive photon count and finite positive step length")
+    if not math.isfinite(photon_density) or photon_density <= 0:
+        raise ValueError("photon_density must be finite and positive")
+    if not np.isfinite(step_length) or step_length <= 0:
+        raise ValueError("Caustic baking requires a finite positive step length")
     if material_clusters is not None and (
         isinstance(material_clusters, (bool, np.bool_))
         or not isinstance(material_clusters, (int, np.integer)) or not 1 <= material_clusters <= 65536
@@ -166,7 +179,7 @@ def bake_caustics(data, materials, index_of_refraction, directional_light, *,
     emission = (np.zeros((65536, 3), dtype=np.float32) if emission is None
                 else _material_table(emission, (65536, 3)))
     hits, weights, area = _gather_hits(
-        data, materials, ior, normals, -toward_light, photons, float(step_length), seed,
+        data, materials, ior, normals, -toward_light, photon_density, float(step_length), seed,
     )
     if np.any(hits[:, 0] >= len(data.blocks) - len(data.uniform_bricks)):
         raise ValueError("Caustic receivers must use ordinary sparse bricks")
