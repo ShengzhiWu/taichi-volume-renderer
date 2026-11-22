@@ -26,6 +26,10 @@ def main():
     parser.set_defaults(ggui=None)
     parser.add_argument("--resolution", nargs=2, type=int, default=(1280, 720),
                         metavar=("WIDTH", "HEIGHT"))
+    parser.add_argument("--fixed-resolution", action="store_true", help="Keep the initial render resolution")
+    parser.add_argument("--vertical-fov", type=float, metavar="DEGREES", help="Vertical camera field of view")
+    parser.add_argument("--highlight-shoulder", type=float, metavar="N",
+                        help="Compress display highlights above N, with 0 < N < 1")
     parser.add_argument("--density", type=float, default=0.22, help="Density assigned to occupied CXW voxels")
     parser.add_argument("--storage", choices=("auto", "indexed", "direct"), default="auto",
                         help="Choose storage from the file (default), or force indexed or direct values")
@@ -43,6 +47,7 @@ def main():
     parser.add_argument("--refraction-mode", choices=("gradient", "interface"),
                         help="Select VXB refraction mode or enable refraction for packed CXW water (ID 3)")
     parser.add_argument("--step", type=float, default=1.0, help="Camera ray step in voxel units")
+    parser.add_argument("--light-step", type=float, default=3.0, help="Shadow ray step in voxel units")
     parser.add_argument("--max-steps", type=int,
                         help="Camera ray step limit (default: 10000 with refraction, unlimited otherwise)")
     lighting = parser.add_mutually_exclusive_group()
@@ -51,10 +56,19 @@ def main():
     parser.set_defaults(lighting=True)
     parser.add_argument("--light-type", choices=("directional", "point"), default="directional",
                         help="Light source used by the viewer (default: directional)")
+    parser.add_argument("--light-direction", nargs=3, type=float, default=(0, 0, 1),
+                        metavar=("X", "Y", "Z"), help="World-space direction toward the directional light")
+    parser.add_argument("--light-rgb", nargs=3, type=float, default=(8, 8, 8),
+                        metavar=("R", "G", "B"), help="Directional light intensity in linear RGB")
     parser.add_argument("--ambient-light", nargs=3, type=float, default=(0.0, 0.0, 0.0),
                         metavar=("R", "G", "B"), help="Unshadowed ambient RGB intensity (default: 0 0 0)")
     parser.add_argument("--fly", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.vertical_fov is not None and not 0 < args.vertical_fov < 180:
+        parser.error("--vertical-fov must be between 0 and 180 degrees")
+    shoulder = args.highlight_shoulder
+    if shoulder is not None and not 0 < shoulder < 1:
+        parser.error("--highlight-shoulder must be between 0 and 1")
     if not args.no_caustics:
         logging.basicConfig(level=logging.INFO)
     ggui = args.ggui if args.ggui is not None else args.arch in (None, "vulkan")
@@ -77,18 +91,30 @@ def main():
         window = DisplayWindow.from_file(
             args.path, resolution=args.resolution, taichi_arch=getattr(ti, arch),
             camera=args.camera, density=args.density, gamma=args.gamma, storage=args.storage,
-            grid_name=args.grid, step_length=args.step, max_steps=args.max_steps,
+            grid_name=args.grid, step_length=args.step, light_step_length=args.light_step,
+            max_steps=args.max_steps,
             caustics=not args.no_caustics, caustic_photon_density=args.caustic_photon_density,
             refractive_shadow_passthrough=args.refractive_shadow_passthrough,
             thicken_ground=args.thicken_ground, lighting=args.lighting, ambient_light=args.ambient_light,
-            # Match a point light of intensity 200 at a distance of 5 from the scene center.
-            directional_light=((0, 0, 1), (8, 8, 8)) if args.light_type == "directional" else None,
+            directional_light=(args.light_direction, args.light_rgb) if args.light_type == "directional" else None,
             **optics,
         )
     except (ValueError, ImportError, OSError) as exc:
         parser.error(str(exc))
+    if args.vertical_fov is not None:
+        window.scene.set_vertical_field_of_view(args.vertical_fov)
+
+    def compress_highlights(_frame, pixels):
+        rgb = pixels.to_numpy()
+        peak = rgb.max(axis=2, keepdims=True)
+        headroom = 1. - shoulder
+        mapped = shoulder + headroom * (1. - np.exp(-np.maximum(peak - shoulder, 0.) / headroom))
+        rgb *= np.where(peak > shoulder, mapped / np.maximum(peak, shoulder), 1.)
+        pixels.from_numpy(rgb)
+
     window.show(title="Sparse smoke | Drag to look | WASD move | Q/E height | R reset",
-                resize=True, ggui=ggui)
+                resize=not args.fixed_resolution, ggui=ggui,
+                image_process=compress_highlights if shoulder is not None else None)
 
 
 if __name__ == "__main__":
