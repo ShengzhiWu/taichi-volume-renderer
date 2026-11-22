@@ -14,6 +14,7 @@ setuptools.setup(
     url="https://github.com/ShengzhiWu/taichi-volume-renderer",
     packages=setuptools.find_packages(),
     install_requires=['numpy', 'taichi'],
+    extras_require={'caustics': ['scikit-learn']},
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",

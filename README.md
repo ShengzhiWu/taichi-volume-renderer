@@ -149,6 +149,26 @@ The sparse Python API accepts `reflection_environment=(sky_rgb, sun_rgb)` as a r
 
 The renderer adds these terms to the background color for the reflected portion of an interface interaction and weights the result by Fresnel reflectance and the ray's remaining transmittance. Rays that escape the scene still see the plain background. The option is supplied at render time for any sparse input format.
 
+#### Bake caustics
+
+After initializing Taichi, use `from taichi_volume_renderer import caustics` to bake directional-light caustics into a loaded indexed scene. The bake multiplies the deposited light by the receiving material's RGB reflectance and adds it to its emission. The returned scene data and tables can be passed to `SparseSmokeScene`.
+
+```python
+from taichi_volume_renderer import caustics
+from taichi_volume_renderer.sparse_smoke import SparseSmokeScene
+from taichi_volume_renderer.vxb_scene import load_vxb_volume
+
+data, materials, ior, normals, emission = load_vxb_volume("path/to/world.vxb", density=0.22)
+sun = ((0, 0, 1), (8, 8, 8))
+data, materials, ior, normals, emission = caustics.bake_caustics(
+    data, materials, ior, sun, interface_normals=normals, emission=emission,
+)
+scene = SparseSmokeScene(data, materials=materials, index_of_refraction=ior,
+                         interface_normals=normals, emission=emission, directional_light=sun)
+```
+
+The baker requires one indexed entity with refractive indices. Receivers must use ordinary bricks. For pools, pass `submerged_only=True` to keep only hits that reach a submerged surface without leaving the water. Increase `photons` to reduce sampling noise. Set `material_clusters=512` to cluster reflectance and emission into representative pairs. This option requires scikit-learn, available through the `caustics` extra. Baking raises an error if the material indices run out.
+
 ### Off-Screen Rendering
 
 Off-screen rendering runs directly from Python without opening a viewer window. With a static scene and fixed lighting, load the scene and precompute lighting once, then reuse the same scene and pixel buffer for each frame.

@@ -25,6 +25,23 @@ def _distance_to_cell_exit(point, direction, cell, width):
     return ti.max(0.0, distance)
 
 
+def _upload_lookup_field(values, components=None, builder=None):
+    values = np.ascontiguousarray(values, dtype=np.float32 if values.dtype.kind == "f" else np.int32)
+    shape = values.shape if components is None else (len(values),)
+    kwargs = {"shape": shape} if builder is None else {}
+    if isinstance(components, tuple):
+        field = ti.Matrix.field(*components, ti.f32, **kwargs)
+    elif components is None:
+        field = ti.field(ti.f32 if values.dtype.kind == "f" else ti.i32, **kwargs)
+    else:
+        field = ti.Vector.field(components, ti.f32 if values.dtype.kind == "f" else ti.i32, **kwargs)
+    if builder is not None:
+        builder.dense(ti.axes(*range(len(shape))), shape).place(field)
+        return field, values
+    field.from_numpy(values)
+    return field
+
+
 @ti.data_oriented
 class SparseSmokeScene(_OrbitScene):
     """Static sparse volume. Initialize Taichi before construction."""
@@ -112,28 +129,7 @@ class SparseSmokeScene(_OrbitScene):
         default_max_steps = REFRACTIVE_MAX_STEPS if self._refractive else 0
         self._max_steps = default_max_steps if max_steps is None else int(max_steps)
         super().__init__(background)
-        self.entity_count = len(data.entities)
-        self.sector_count = len(data.sectors)
-        self.brick_count = len(data.blocks)
-        self._regular_brick_count = self.brick_count - len(data.uniform_bricks)
-        self._has_uniform_bricks = bool(data.uniform_bricks)
-        if self.sector_count:
-            self._sectors = ti.Vector.field(3, dtype=ti.i32, shape=self.sector_count)
-            self._brick_ids = ti.field(ti.i32, shape=data.brick_ids.shape)
-            self._sectors.from_numpy(data.sectors)
-            self._brick_ids.from_numpy(data.brick_ids)
-        if self._has_uniform_bricks:
-            if self.entity_count != 1:
-                raise ValueError("Large uniform bricks require a single sparse entity")
-            uniform = np.asarray(data.uniform_bricks, dtype=np.int32)
-            levels, starts = np.unique(uniform[:, 0], return_index=True)
-            ends = np.append(starts[1:], len(uniform))
-            self._uniform_ranges = ti.Vector.field(3, dtype=ti.i32, shape=len(levels))
-            self._uniform_coords = ti.Vector.field(3, dtype=ti.i32, shape=len(uniform))
-            self._uniform_rows = ti.field(ti.i32, shape=len(uniform))
-            self._uniform_ranges.from_numpy(np.column_stack((levels, starts, ends)).astype(np.int32))
-            self._uniform_coords.from_numpy(np.ascontiguousarray(uniform[:, 1:4]))
-            self._uniform_rows.from_numpy(np.ascontiguousarray(uniform[:, 4]))
+        self._init_lookup(data, _upload_lookup_field)
         self._load_voxels(data.blocks, materials, density, gamma, storage)
         if self._emissive:
             if self._direct or data.blocks.dtype != np.uint16:
@@ -160,19 +156,6 @@ class SparseSmokeScene(_OrbitScene):
             normals[present] /= lengths[present, None]
             self._interface_normals = ti.Vector.field(3, dtype=ti.f32, shape=65536)
             self._interface_normals.from_numpy(normals)
-
-        self._positions = ti.Vector.field(3, dtype=ti.f32, shape=self.entity_count)
-        self._rotations = ti.Matrix.field(3, 3, dtype=ti.f32, shape=self.entity_count)
-        self._lower = ti.Vector.field(3, dtype=ti.i32, shape=self.entity_count)
-        self._upper = ti.Vector.field(3, dtype=ti.i32, shape=self.entity_count)
-        self._ranges = ti.Vector.field(2, dtype=ti.i32, shape=self.entity_count)
-        self._positions.from_numpy(np.array([entity.position for entity in data.entities], dtype=np.float32))
-        self._rotations.from_numpy(np.array([entity.rotation for entity in data.entities], dtype=np.float32))
-        self._lower.from_numpy(np.array([entity.lower // 128 for entity in data.entities], dtype=np.int32))
-        self._upper.from_numpy(np.array([(entity.upper + 127) // 128 for entity in data.entities], dtype=np.int32))
-        self._ranges.from_numpy(np.array([
-            [entity.first_sector, entity.end_sector] for entity in data.entities
-        ], dtype=np.int32))
 
         bounds = []
         for entity in data.entities:
@@ -219,6 +202,32 @@ class SparseSmokeScene(_OrbitScene):
         self._saved_camera_pose = data.player_pose
         self.set_view(camera)
         self.render = self._make_render()
+
+    def _init_lookup(self, data, upload):
+        self.entity_count = len(data.entities)
+        self.sector_count = len(data.sectors)
+        self.brick_count = len(data.blocks)
+        self._regular_brick_count = self.brick_count - len(data.uniform_bricks)
+        self._has_uniform_bricks = bool(data.uniform_bricks)
+        if self.sector_count:
+            self._sectors = upload(np.asarray(data.sectors, dtype=np.int32), 3)
+            self._brick_ids = upload(np.asarray(data.brick_ids, dtype=np.int32))
+        if self._has_uniform_bricks:
+            if self.entity_count != 1:
+                raise ValueError("Large uniform bricks require a single sparse entity")
+            uniform = np.asarray(data.uniform_bricks, dtype=np.int32)
+            levels, starts = np.unique(uniform[:, 0], return_index=True)
+            ends = np.append(starts[1:], len(uniform))
+            self._uniform_ranges = upload(np.column_stack((levels, starts, ends)), 3)
+            self._uniform_coords = upload(uniform[:, 1:4], 3)
+            self._uniform_rows = upload(uniform[:, 4])
+        self._positions = upload(np.array([entity.position for entity in data.entities], dtype=np.float32), 3)
+        self._rotations = upload(np.array([entity.rotation for entity in data.entities], dtype=np.float32), (3, 3))
+        self._lower = upload(np.array([entity.lower // 128 for entity in data.entities]), 3)
+        self._upper = upload(np.array([(entity.upper + 127) // 128 for entity in data.entities]), 3)
+        self._ranges = upload(np.array([
+            [entity.first_sector, entity.end_sector] for entity in data.entities
+        ]), 2)
 
     def set_view(self, camera):
         """Reset to the overview or to the saved player view, when provided."""
