@@ -82,8 +82,8 @@ class SparseSmokeScene(_OrbitScene):
                         data, palette, indices, light, interface_normals=normals, emission=emission,
                         photon_density=density, material_clusters=512,
                     )
-                    if options.get("refractive_shadow_mix", "auto") == "auto":
-                        options["refractive_shadow_mix"] = 0.
+                    if options.get("refractive_shadow_passthrough", "auto") == "auto":
+                        options["refractive_shadow_passthrough"] = 0.
             return cls(data, materials=palette, index_of_refraction=indices, interface_normals=normals,
                        emission=emission, **options)
         if suffix == ".vdb":
@@ -100,7 +100,7 @@ class SparseSmokeScene(_OrbitScene):
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
-        reflection_environment=None, refractive_shadow_mix="auto",
+        reflection_environment=None, refractive_shadow_passthrough="auto",
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -112,7 +112,7 @@ class SparseSmokeScene(_OrbitScene):
         Nonzero Z-up interface_normals override the estimated normal in interface mode.
         emission is an optional 65,536-entry RGB table of linear outgoing radiance.
         reflection_environment optionally adds (sky RGB, sun RGB) to interface reflections.
-        refractive_shadow_mix blends opaque refractive shadows (0) with ordinary shadows (1).
+        refractive_shadow_passthrough blends opaque refractive shadows (0) with ordinary shadows (1).
         Auto uses 0 after load-time caustic baking and 1 otherwise.
         It applies to directional lighting when refraction is enabled.
         """
@@ -145,10 +145,10 @@ class SparseSmokeScene(_OrbitScene):
         if refraction_mode not in ("gradient", "interface"):
             raise ValueError("refraction_mode must be 'gradient' or 'interface'")
         self._refractive = index_of_refraction is not None
-        mix = 1. if refractive_shadow_mix == "auto" else float(refractive_shadow_mix)
+        mix = 1. if refractive_shadow_passthrough == "auto" else float(refractive_shadow_passthrough)
         if not 0. <= mix <= 1.:
-            raise ValueError("refractive_shadow_mix must be auto or a number between 0 and 1")
-        self._refractive_shadow_mix = mix if self._directional and self._refractive else 1.
+            raise ValueError("refractive_shadow_passthrough must be auto or a number between 0 and 1")
+        self._refractive_shadow_passthrough = mix if self._directional and self._refractive else 1.
         self._interface = self._refractive and refraction_mode == "interface"
         self._use_interface_normals = self._interface and interface_normals is not None
         self._emissive = emission is not None
@@ -535,10 +535,10 @@ class SparseSmokeScene(_OrbitScene):
         transmittance, t = 1.0, 0.0
         _, end = self._volume_interval(origin, direction)
         shadow_weight = 1.
-        if ti.static(self._refractive_shadow_mix < 1.):
+        if ti.static(self._refractive_shadow_passthrough < 1.):
             if self._refractive_shadow(origin, direction, end):
                 # The opaque endpoint contributes zero direct light at this voxel.
-                shadow_weight *= self._refractive_shadow_mix
+                shadow_weight *= self._refractive_shadow_passthrough
         if shadow_weight == 0.:
             transmittance = 0.
         while t <= end and transmittance != 0.0:

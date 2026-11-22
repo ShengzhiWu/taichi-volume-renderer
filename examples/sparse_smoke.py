@@ -35,7 +35,7 @@ def main():
     caustics.add_argument("--caustic-photon-density", type=float, nargs="?", const=DEFAULT_PHOTON_DENSITY, metavar="N",
                           help=f"Photons per projected square voxel for VXB caustics (default {DEFAULT_PHOTON_DENSITY})")
     caustics.add_argument("--no-caustics", action="store_true", help="Skip load-time VXB caustic baking")
-    parser.add_argument("--refractive-shadow-mix", default="auto", metavar="auto|N",
+    parser.add_argument("--refractive-shadow-passthrough", default="auto", metavar="auto|N",
                         help="Blend opaque refractive shadows (0) with ordinary shadows (1). "
                              "Auto uses 0 if caustics are baked at load time and 1 otherwise.")
     parser.add_argument("--gamma", type=float, default=1.0,
@@ -79,7 +79,7 @@ def main():
             camera=args.camera, density=args.density, gamma=args.gamma, storage=args.storage,
             grid_name=args.grid, step_length=args.step, max_steps=args.max_steps,
             caustics=not args.no_caustics, caustic_photon_density=args.caustic_photon_density,
-            refractive_shadow_mix=args.refractive_shadow_mix,
+            refractive_shadow_passthrough=args.refractive_shadow_passthrough,
             thicken_ground=args.thicken_ground, lighting=args.lighting, ambient_light=args.ambient_light,
             # Match a point light of intensity 200 at a distance of 5 from the scene center.
             directional_light=((0, 0, 1), (8, 8, 8)) if args.light_type == "directional" else None,

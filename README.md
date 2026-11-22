@@ -155,7 +155,7 @@ Loading a VXB bakes caustics by default when directional lighting is active and 
 
 - `--no-caustics` skips load-time baking. Use it for VXB files that already contain baked caustics.
 - `--caustic-photon-density N` sets the number of photons per square voxel of projected area. The default is `6`.
-- `--refractive-shadow-mix auto|N` controls directional shadows when refraction is enabled. At `0`, refractive voxels block direct light. At `1`, they cast ordinary volume shadows. Values between `0` and `1` blend the two shadow results. The default, `auto`, uses `0` if caustics were baked at load time and `1` otherwise. An explicit number overrides `auto`.
+- `--refractive-shadow-passthrough auto|N` controls directional shadows when refraction is enabled. At `0`, refractive voxels block direct light. At `1`, they cast ordinary volume shadows. Values between `0` and `1` blend the two shadow results. The default, `auto`, uses `0` if caustics were baked at load time and `1` otherwise. An explicit number overrides `auto`.
 
 After initializing Taichi, use `from taichi_volume_renderer import caustics` to bake directional-light caustics into a loaded indexed scene. The bake multiplies the deposited light by the receiving material's RGB reflectance and adds it to its emission. The returned scene data and tables can be passed to `SparseSmokeScene`.
 
@@ -171,10 +171,10 @@ data, materials, ior, normals, emission = caustics.bake_caustics(
 )
 scene = SparseSmokeScene(data, materials=materials, index_of_refraction=ior,
                          interface_normals=normals, emission=emission, directional_light=sun,
-                         refractive_shadow_mix=0)
+                         refractive_shadow_passthrough=0)
 ```
 
-In Python, pass `caustics=False`, `caustic_photon_density=N`, or `refractive_shadow_mix="auto"` to `DisplayWindow.from_file()` for the corresponding controls. The shadow mix also accepts a number. For a manual bake, set the density with `photon_density`.
+In Python, pass `caustics=False`, `caustic_photon_density=N`, or `refractive_shadow_passthrough="auto"` to `DisplayWindow.from_file()` for the corresponding controls. The shadow passthrough also accepts a number. For a manual bake, set the density with `photon_density`.
 
 The baker requires one indexed entity with refractive indices. Receivers must use ordinary bricks. The loader targets 512 material clusters. Baking raises an error if the material indices run out.
 
