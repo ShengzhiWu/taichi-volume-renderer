@@ -33,6 +33,8 @@ def main():
                         help="Extend the lowest non-air voxel in each vertical column downward by N voxels")
     parser.add_argument("--caustic-photon-density", type=float, nargs="?", const=DEFAULT_PHOTON_DENSITY, metavar="N",
                         help=f"Bake VXB caustics with N photons per projected square voxel (default {DEFAULT_PHOTON_DENSITY} when enabled)")
+    parser.add_argument("--refractive-shadow-mix", type=float, default=0., metavar="N",
+                        help="Blend opaque refractive shadows (default 0) with ordinary shadows (1)")
     parser.add_argument("--gamma", type=float, default=1.0,
                         help="Apply x^gamma to each loaded RGB component (default: 1)")
     parser.add_argument("--refraction-mode", choices=("gradient", "interface"),
@@ -73,7 +75,7 @@ def main():
             args.path, resolution=args.resolution, taichi_arch=getattr(ti, arch),
             camera=args.camera, density=args.density, gamma=args.gamma, storage=args.storage,
             grid_name=args.grid, step_length=args.step, max_steps=args.max_steps,
-            caustic_photon_density=args.caustic_photon_density,
+            caustic_photon_density=args.caustic_photon_density, refractive_shadow_mix=args.refractive_shadow_mix,
             thicken_ground=args.thicken_ground, lighting=args.lighting, ambient_light=args.ambient_light,
             # Match a point light of intensity 200 at a distance of 5 from the scene center.
             directional_light=((0, 0, 1), (8, 8, 8)) if args.light_type == "directional" else None,

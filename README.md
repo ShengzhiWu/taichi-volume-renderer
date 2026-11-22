@@ -164,10 +164,13 @@ data, materials, ior, normals, emission = caustics.bake_caustics(
     data, materials, ior, sun, interface_normals=normals, emission=emission,
 )
 scene = SparseSmokeScene(data, materials=materials, index_of_refraction=ior,
-                         interface_normals=normals, emission=emission, directional_light=sun)
+                         interface_normals=normals, emission=emission, directional_light=sun,
+                         refractive_shadow_mix=0)
 ```
 
 The baker requires one indexed entity with refractive indices. Receivers must use ordinary bricks. The default photon density is `6` per square voxel of projected area. In Python, pass `photon_density` to override it. For VXB scenes with refractive materials and a directional light, enable load-time baking with `--caustic-photon-density` or pass a custom density with `--caustic-photon-density N`. The viewer targets 512 material clusters. Set `material_clusters=512` to cluster reflectance and emission into representative pairs. This option requires scikit-learn, available through the `caustics` extra. Baking raises an error if the material indices run out.
+
+When refraction and directional lighting are enabled, use `--refractive-shadow-mix N` or pass `refractive_shadow_mix=N` in Python. At `0`, refractive voxels block direct light. At `1`, they cast ordinary volume shadows. Intermediate values blend the finished shadow results. The default is `0`.
 
 ### Off-Screen Rendering
 

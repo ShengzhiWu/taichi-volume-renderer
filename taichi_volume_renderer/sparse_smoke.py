@@ -95,7 +95,7 @@ class SparseSmokeScene(_OrbitScene):
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
-        reflection_environment=None,
+        reflection_environment=None, refractive_shadow_mix=0.,
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -107,6 +107,8 @@ class SparseSmokeScene(_OrbitScene):
         Nonzero Z-up interface_normals override the estimated normal in interface mode.
         emission is an optional 65,536-entry RGB table of linear outgoing radiance.
         reflection_environment optionally adds (sky RGB, sun RGB) to interface reflections.
+        refractive_shadow_mix blends opaque refractive shadows (0) with ordinary shadows (1).
+        It applies to directional lighting when refraction is enabled.
         """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
             if not np.isfinite(value) or value <= 0:
@@ -137,6 +139,10 @@ class SparseSmokeScene(_OrbitScene):
         if refraction_mode not in ("gradient", "interface"):
             raise ValueError("refraction_mode must be 'gradient' or 'interface'")
         self._refractive = index_of_refraction is not None
+        mix = float(refractive_shadow_mix)
+        if not 0. <= mix <= 1.:
+            raise ValueError("refractive_shadow_mix must be between 0 and 1")
+        self._refractive_shadow_mix = mix if self._directional and self._refractive else 1.
         self._interface = self._refractive and refraction_mode == "interface"
         self._use_interface_normals = self._interface and interface_normals is not None
         self._emissive = emission is not None
@@ -436,7 +442,7 @@ class SparseSmokeScene(_OrbitScene):
         return found
 
     @ti.func
-    def _lookup(self, origin, direction, t, end, entity):
+    def _lookup(self, origin, direction, t, end, entity, exact_voxel: ti.template() = False):
         rotation = self._rotations[entity]
         position = self._positions[entity]
         local_direction = rotation.transpose() @ direction
@@ -445,7 +451,7 @@ class SparseSmokeScene(_OrbitScene):
         lower, upper = self._lower[entity], self._upper[entity]
         voxel_lower = lower * 128
         relative = p - voxel_lower
-        if ti.static(self._interface):
+        if ti.static(self._interface or exact_voxel):
             relative = ti.floor(relative)
         voxel = voxel_lower + ti.cast(relative, ti.i32)
         sector_cell = voxel >> 7
@@ -495,9 +501,40 @@ class SparseSmokeScene(_OrbitScene):
         return intersect_box(origin, direction, center - half_extent, center + half_extent, 0.0, 1e30)
 
     @ti.func
+    def _refractive_shadow(self, origin, direction, end):
+        blocked, t = False, 0.
+        while t <= end and not blocked:
+            next_sample = 1e30
+            for entity in range(self.entity_count):
+                next_entity, brick, index, voxel = self._lookup(origin, direction, t, 1e30, entity, True)
+                if brick >= 0:
+                    if self._ior[self._block_code(brick, index)] != self._ior[0]:
+                        blocked = True
+                        break
+                    rotation = self._rotations[entity].transpose()
+                    local_ray = rotation @ direction
+                    local_pos = rotation @ (origin - self._positions[entity]) + local_ray * t
+                    next_entity = t + _distance_to_cell_exit(local_pos, local_ray, voxel, 1)
+                next_sample = ti.min(next_sample, next_entity)
+            if next_sample > end:
+                break
+            next_t = next_sample + INTERFACE_ENTRY_OFFSET
+            if next_t <= t:
+                break
+            t = next_t
+        return blocked
+
+    @ti.func
     def _light_transmittance(self, origin, direction):
         transmittance, t = 1.0, 0.0
         _, end = self._volume_interval(origin, direction)
+        shadow_weight = 1.
+        if ti.static(self._refractive_shadow_mix < 1.):
+            if self._refractive_shadow(origin, direction, end):
+                # The opaque endpoint contributes zero direct light at this voxel.
+                shadow_weight *= self._refractive_shadow_mix
+        if shadow_weight == 0.:
+            transmittance = 0.
         while t <= end and transmittance != 0.0:
             density, next_sample = 0.0, 1e30
             for entity in range(self.entity_count):
@@ -512,7 +549,7 @@ class SparseSmokeScene(_OrbitScene):
             if next_t <= t:
                 break
             t = next_t
-        return transmittance
+        return transmittance * shadow_weight
 
     @ti.func
     def _sample_refractive_index(self, origin, direction, t):
