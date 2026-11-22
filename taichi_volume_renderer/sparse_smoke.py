@@ -52,7 +52,8 @@ class SparseSmokeScene(_OrbitScene):
         return cls(data, gamma=gamma, **options)
 
     @classmethod
-    def from_file(cls, path, *, grid_name=None, thicken_ground=0, caustic_photon_density=None, **options):
+    def from_file(cls, path, *, grid_name=None, thicken_ground=0,
+                  caustics=True, caustic_photon_density=None, **options):
         suffix = Path(path).suffix.lower()
         if caustic_photon_density is not None and suffix != ".vxb":
             raise ValueError("Load-time caustic baking requires a VXB file")
@@ -67,18 +68,20 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError("VXB supplies material values and optical properties from the file")
             data, palette, indices, normals, emission = load_vxb_volume(path, density=options.get("density", .22))
             data = _thicken_ground(data, thicken_ground)
-            if caustic_photon_density is not None:
-                from .caustics import bake_caustics
+            light = options.get("directional_light")
+            if caustics and indices is not None and light is not None and options.get("lighting", True):
+                refractive = indices != 1.
+                if any(refractive[data.blocks[start:start + 8192]].any()
+                       for start in range(0, len(data.blocks), 8192)):
+                    from .caustics import DEFAULT_PHOTON_DENSITY, bake_caustics
 
-                light = options.get("directional_light")
-                if light is None or indices is None:
-                    raise ValueError("Caustic baking requires refractive VXB materials and a directional light")
-                gamma = options.pop("gamma", 1.)
-                palette[:, :3] = apply_rgb_gamma(palette[:, :3], gamma)
-                data, palette, indices, normals, emission = bake_caustics(
-                    data, palette, indices, light, interface_normals=normals, emission=emission,
-                    photon_density=caustic_photon_density, material_clusters=512,
-                )
+                    density = DEFAULT_PHOTON_DENSITY if caustic_photon_density is None else caustic_photon_density
+                    gamma = options.pop("gamma", 1.)
+                    palette[:, :3] = apply_rgb_gamma(palette[:, :3], gamma)
+                    data, palette, indices, normals, emission = bake_caustics(
+                        data, palette, indices, light, interface_normals=normals, emission=emission,
+                        photon_density=density, material_clusters=512,
+                    )
             return cls(data, materials=palette, index_of_refraction=indices, interface_normals=normals,
                        emission=emission, **options)
         if suffix == ".vdb":
