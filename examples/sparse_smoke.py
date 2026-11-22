@@ -35,8 +35,9 @@ def main():
     caustics.add_argument("--caustic-photon-density", type=float, nargs="?", const=DEFAULT_PHOTON_DENSITY, metavar="N",
                           help=f"Photons per projected square voxel for VXB caustics (default {DEFAULT_PHOTON_DENSITY})")
     caustics.add_argument("--no-caustics", action="store_true", help="Skip load-time VXB caustic baking")
-    parser.add_argument("--refractive-shadow-mix", type=float, default=0., metavar="N",
-                        help="Blend opaque refractive shadows (default 0) with ordinary shadows (1)")
+    parser.add_argument("--refractive-shadow-mix", default="auto", metavar="auto|N",
+                        help="Blend opaque refractive shadows (0) with ordinary shadows (1). "
+                             "Auto uses 0 if caustics are baked at load time and 1 otherwise.")
     parser.add_argument("--gamma", type=float, default=1.0,
                         help="Apply x^gamma to each loaded RGB component (default: 1)")
     parser.add_argument("--refraction-mode", choices=("gradient", "interface"),

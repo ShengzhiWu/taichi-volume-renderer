@@ -82,6 +82,8 @@ class SparseSmokeScene(_OrbitScene):
                         data, palette, indices, light, interface_normals=normals, emission=emission,
                         photon_density=density, material_clusters=512,
                     )
+                    if options.get("refractive_shadow_mix", "auto") == "auto":
+                        options["refractive_shadow_mix"] = 0.
             return cls(data, materials=palette, index_of_refraction=indices, interface_normals=normals,
                        emission=emission, **options)
         if suffix == ".vdb":
@@ -98,7 +100,7 @@ class SparseSmokeScene(_OrbitScene):
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
-        reflection_environment=None, refractive_shadow_mix=0.,
+        reflection_environment=None, refractive_shadow_mix="auto",
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -111,6 +113,7 @@ class SparseSmokeScene(_OrbitScene):
         emission is an optional 65,536-entry RGB table of linear outgoing radiance.
         reflection_environment optionally adds (sky RGB, sun RGB) to interface reflections.
         refractive_shadow_mix blends opaque refractive shadows (0) with ordinary shadows (1).
+        Auto uses 0 after load-time caustic baking and 1 otherwise.
         It applies to directional lighting when refraction is enabled.
         """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
@@ -142,9 +145,9 @@ class SparseSmokeScene(_OrbitScene):
         if refraction_mode not in ("gradient", "interface"):
             raise ValueError("refraction_mode must be 'gradient' or 'interface'")
         self._refractive = index_of_refraction is not None
-        mix = float(refractive_shadow_mix)
+        mix = 1. if refractive_shadow_mix == "auto" else float(refractive_shadow_mix)
         if not 0. <= mix <= 1.:
-            raise ValueError("refractive_shadow_mix must be between 0 and 1")
+            raise ValueError("refractive_shadow_mix must be auto or a number between 0 and 1")
         self._refractive_shadow_mix = mix if self._directional and self._refractive else 1.
         self._interface = self._refractive and refraction_mode == "interface"
         self._use_interface_normals = self._interface and interface_normals is not None
