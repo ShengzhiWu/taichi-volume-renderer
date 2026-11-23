@@ -17,6 +17,30 @@ from taichi_volume_renderer.vxb_scene import load_vxb_volume
 
 
 class SparseSmokeTest(unittest.TestCase):
+    def test_shadow_starts_with_half_voxel_before_configured_step(self):
+        ti.init(arch=ti.cpu)
+        self.addCleanup(ti.reset)
+        fields = (MaterialField("density", "f32"),)
+        voxels = [0] * 512
+        for index in (1, 2, 3, 10):
+            voxels[index] = 1
+        world = VxbScene(fields, ((0.,), (.1,)), (8,), {(0, 0, 0): tuple(voxels)})
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "world.vxb"
+            save_vxb(path, world)
+            scene = SparseSmokeScene.from_file(path, light_step_length=2.)
+        output = ti.field(dtype=ti.f32, shape=(2, 2))
+
+        @ti.kernel
+        def sample():
+            for row, sign in output:
+                output[row, sign] = scene._light_transmittance(
+                    ti.Vector([2.5, row + .5, .5]), ti.Vector([2. * sign - 1., 0., 0.]),
+                )
+
+        sample()
+        np.testing.assert_allclose(output.to_numpy(), [[.95 * .8, .95 * .8], [.95, .95]])
+
     def test_uniform_bricks_share_center_lighting(self):
         ti.init(arch=ti.cpu)
         self.addCleanup(ti.reset)

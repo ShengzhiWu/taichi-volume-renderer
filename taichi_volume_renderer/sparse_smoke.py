@@ -540,7 +540,8 @@ class SparseSmokeScene(_OrbitScene):
         return brick, index, shift
 
     @ti.func
-    def _lookup(self, origin, direction, t, end, entity, exact_voxel: ti.template() = False):
+    def _lookup(self, origin, direction, t, end, entity, exact_voxel: ti.template() = False,
+                forward_voxel: ti.template() = False):
         rotation = self._rotations[entity]
         position = self._positions[entity]
         local_direction = rotation.transpose() @ direction
@@ -550,7 +551,11 @@ class SparseSmokeScene(_OrbitScene):
         root_width = ti.static(1 << self._root_shift)
         voxel_lower = lower * root_width
         relative = p - voxel_lower
-        if ti.static(self._interface or exact_voxel):
+        if ti.static(forward_voxel):
+            # At a boundary, sample the voxel the ray is about to enter.
+            lower_edge = ti.floor(relative)
+            relative = lower_edge - ti.cast((relative == lower_edge) & (local_direction < 0), ti.f32)
+        elif ti.static(self._interface or exact_voxel):
             relative = ti.floor(relative)
         voxel = voxel_lower + ti.cast(relative, ti.i32)
         sector_cell = voxel >> ti.static(self._root_shift)
@@ -642,14 +647,22 @@ class SparseSmokeScene(_OrbitScene):
         while t <= end and transmittance != 0.0:
             density, next_sample = 0.0, 1e30
             for entity in range(self.entity_count):
-                next_entity_sample, brick, voxel, _ = self._lookup(origin, direction, t, 1e30, entity)
+                next_entity_sample, brick, voxel, _ = self._lookup(
+                    origin, direction, t, 1e30, entity, forward_voxel=True,
+                )
                 next_sample = ti.min(next_sample, next_entity_sample)
                 if brick >= 0:
                     density += self._sample_voxel(brick, voxel, False).w
             if next_sample > end:
                 break
-            transmittance *= 1.0 - density * self._light_step
-            next_t = t + ti.min(self._advance(t, next_sample, self._light_step), 2**24) * self._light_step
+            step = self._light_step
+            next_t = t
+            if t == 0.0:
+                step = 0.5
+                next_t = step
+            else:
+                next_t += ti.min(self._advance(t, next_sample, step), 2**24) * step
+            transmittance *= 1.0 - density * step
             if next_t <= t:
                 break
             t = next_t
