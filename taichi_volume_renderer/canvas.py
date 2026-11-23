@@ -611,24 +611,26 @@ def gaussian_splatting(  # Render Gaussian splatting data (Tested with data expo
 
 @ti.data_oriented
 class SparseLineCanvas:
-    """A binary voxel canvas with lazily allocated, bit-packed 8-cubed bricks.
+    """A voxel line canvas with lazily allocated 8-cubed bricks.
 
     Initialize Taichi with a sparse-capable backend before creating it.
     Bounds are in world brick coordinates, with an exclusive upper bound.
     """
 
-    def __init__(self, lower, upper):
+    def __init__(self, lower, upper, *, antialias=False):
         self.lower = tuple(map(int, lower))
         self.extent = tuple(int(b) - a for a, b in zip(self.lower, upper))
         if len(self.lower) != 3 or len(self.extent) != 3 or min(self.extent) <= 0:
             raise ValueError("Expected a nonempty 3D brick range")
 
-        self._words = ti.field(ti.u32)
+        self._antialias = antialias
+        self._values_per_brick = 512 if antialias else 16
+        self._values = ti.field(ti.u8 if antialias else ti.u32)
         self._cursor = ti.field(ti.i32)
         fields = ti.FieldsBuilder()
         sectors = tuple((n + 15) // 16 for n in self.extent)
         self._leaf = fields.pointer(ti.ijk, sectors).pointer(ti.ijk, 16)
-        self._leaf.dense(ti.l, 16).place(self._words)
+        self._leaf.dense(ti.l, self._values_per_brick).place(self._values)
         fields.place(self._cursor)
         self._tree = fields.finalize()
 
@@ -650,7 +652,7 @@ class SparseLineCanvas:
             start = ti.Vector([segments[i, 0], segments[i, 1], segments[i, 2]])
             end = ti.Vector([segments[i, 3], segments[i, 4], segments[i, 5]])
             radius = segments[i, 6]
-            reach = radius + .37
+            reach = radius + ti.static(0.5 if self._antialias else 0.0)
             delta = end - start
             length_sq = delta.dot(delta)
             low = ti.max(ti.Vector.zero(ti.i32, 3),
@@ -662,32 +664,31 @@ class SparseLineCanvas:
                 relative = point - start
                 t = ti.min(1., ti.max(0., relative.dot(delta) / ti.max(length_sq, 1e-12)))
                 distance_sq = (relative - t * delta).norm_sqr()
-                hit = distance_sq <= radius * radius
-                if distance_sq > ti.max(0., radius - .37)**2 and distance_sq < reach**2:
-                    # A voxel's sub-sample is fixed across all strokes so their
-                    # union is independent of traversal order and overlap.
-                    key = (ti.cast(x, ti.u32) * ti.u32(73856093)
-                           ^ ti.cast(y, ti.u32) * ti.u32(19349663)
-                           ^ ti.cast(z, ti.u32) * ti.u32(83492791))
-                    key ^= key >> 13
-                    jitter = ti.cast(ti.Vector([key & 255, (key >> 8) & 255, (key >> 16) & 255]), ti.f32)
-                    relative += (jitter - 127.5) * (.42 / 255)
-                    t = ti.min(1., ti.max(0., relative.dot(delta) / ti.max(length_sq, 1e-12)))
-                    hit = (relative - t * delta).norm_sqr() <= radius * radius
-                if hit:
-                    local = (x & 7) + 8 * ((y & 7) + 8 * (z & 7))
-                    ti.atomic_or(self._words[x // 8, y // 8, z // 8, local >> 5],
+                local = (x & 7) + 8 * ((y & 7) + 8 * (z & 7))
+                if ti.static(self._antialias):
+                    # Approximate coverage by a one-voxel linear transition.
+                    coverage = ti.min(1., 2. * radius, ti.max(0., reach - ti.sqrt(distance_sq)))
+                    value = ti.cast(255. * coverage + .5, ti.u8)
+                    if value:
+                        ti.atomic_max(self._values[x // 8, y // 8, z // 8, local], value)
+                elif distance_sq <= radius * radius:
+                    ti.atomic_or(self._values[x // 8, y // 8, z // 8, local >> 5],
                                  ti.u32(1) << (local & 31))
 
     def read_bricks(self):
-        """Return world brick coordinates and one dense 512-bit mask per brick."""
+        """Return world brick coordinates and per-brick occupancy or coverage.
+
+        Binary bricks return 16 packed uint32 words. With antialias=True,
+        each brick returns 512 uint8 coverage values, with 255 fully covered.
+        """
         count = self._count_bricks()
         coords = np.empty((count, 3), dtype=np.int32)
-        words = np.empty((count, 16), dtype=np.uint32)
+        values = np.empty((count, self._values_per_brick),
+                          dtype=np.uint8 if self._antialias else np.uint32)
         if count:
             self._cursor[None] = 0
-            self._read_bricks(coords, words)
-        return coords, words
+            self._read_bricks(coords, values)
+        return coords, values
 
     @ti.kernel
     def _count_bricks(self) -> ti.i32:
@@ -698,10 +699,10 @@ class SparseLineCanvas:
 
     @ti.kernel
     def _read_bricks(self, coords: ti.types.ndarray(dtype=ti.i32, ndim=2),
-                     words: ti.types.ndarray(dtype=ti.u32, ndim=2)):
+                     values: ti.types.ndarray(ndim=2)):
         for brick in ti.grouped(self._leaf):
             row = ti.atomic_add(self._cursor[None], 1)
             for axis in ti.static(range(3)):
                 coords[row, axis] = brick[axis] + self.lower[axis]
-            for word in range(16):
-                words[row, word] = self._words[brick.x, brick.y, brick.z, word]
+            for index in range(self._values_per_brick):
+                values[row, index] = self._values[brick.x, brick.y, brick.z, index]
