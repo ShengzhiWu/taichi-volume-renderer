@@ -607,3 +607,101 @@ def gaussian_splatting(  # Render Gaussian splatting data (Tested with data expo
         scales,
         colors,
         opacities)
+
+
+@ti.data_oriented
+class SparseLineCanvas:
+    """A binary voxel canvas with lazily allocated, bit-packed 8-cubed bricks.
+
+    Initialize Taichi with a sparse-capable backend before creating it.
+    Bounds are in world brick coordinates, with an exclusive upper bound.
+    """
+
+    def __init__(self, lower, upper):
+        self.lower = tuple(map(int, lower))
+        self.extent = tuple(int(b) - a for a, b in zip(self.lower, upper))
+        if len(self.lower) != 3 or len(self.extent) != 3 or min(self.extent) <= 0:
+            raise ValueError("Expected a nonempty 3D brick range")
+
+        self._words = ti.field(ti.u32)
+        self._cursor = ti.field(ti.i32)
+        fields = ti.FieldsBuilder()
+        sectors = tuple((n + 15) // 16 for n in self.extent)
+        self._leaf = fields.pointer(ti.ijk, sectors).pointer(ti.ijk, 16)
+        self._leaf.dense(ti.l, 16).place(self._words)
+        fields.place(self._cursor)
+        self._tree = fields.finalize()
+
+    def draw_segments(self, segments):
+        """Draw round-ended segments in voxel units, as rows of start, end and radius."""
+        segments = np.ascontiguousarray(segments, dtype=np.float32)
+        if segments.ndim != 2 or segments.shape[1] != 7:
+            raise ValueError("Expected an N by 7 segment array")
+        if not np.isfinite(segments).all() or np.any(segments[:, 6] <= 0):
+            raise ValueError("Segments need finite coordinates and positive radii")
+        if len(segments):
+            self._draw_segments(segments)
+
+    @ti.kernel
+    def _draw_segments(self, segments: ti.types.ndarray(dtype=ti.f32, ndim=2)):
+        offset = ti.Vector(self.lower) * 8
+        extent = ti.Vector(self.extent) * 8
+        for i in range(segments.shape[0]):
+            start = ti.Vector([segments[i, 0], segments[i, 1], segments[i, 2]])
+            end = ti.Vector([segments[i, 3], segments[i, 4], segments[i, 5]])
+            radius = segments[i, 6]
+            reach = radius + .37
+            delta = end - start
+            length_sq = delta.dot(delta)
+            low = ti.max(ti.Vector.zero(ti.i32, 3),
+                         ti.cast(ti.floor(ti.min(start, end) - reach), ti.i32) - offset)
+            high = ti.min(extent, ti.cast(ti.ceil(ti.max(start, end) + reach), ti.i32) - offset)
+            for x, y, z in ti.ndrange((low.x, high.x), (low.y, high.y), (low.z, high.z)):
+                voxel = ti.Vector([x, y, z])
+                point = ti.cast(voxel + offset, ti.f32) + .5
+                relative = point - start
+                t = ti.min(1., ti.max(0., relative.dot(delta) / ti.max(length_sq, 1e-12)))
+                distance_sq = (relative - t * delta).norm_sqr()
+                hit = distance_sq <= radius * radius
+                if distance_sq > ti.max(0., radius - .37)**2 and distance_sq < reach**2:
+                    # A voxel's sub-sample is fixed across all strokes so their
+                    # union is independent of traversal order and overlap.
+                    key = (ti.cast(x, ti.u32) * ti.u32(73856093)
+                           ^ ti.cast(y, ti.u32) * ti.u32(19349663)
+                           ^ ti.cast(z, ti.u32) * ti.u32(83492791))
+                    key ^= key >> 13
+                    jitter = ti.cast(ti.Vector([key & 255, (key >> 8) & 255, (key >> 16) & 255]), ti.f32)
+                    relative += (jitter - 127.5) * (.42 / 255)
+                    t = ti.min(1., ti.max(0., relative.dot(delta) / ti.max(length_sq, 1e-12)))
+                    hit = (relative - t * delta).norm_sqr() <= radius * radius
+                if hit:
+                    local = (x & 7) + 8 * ((y & 7) + 8 * (z & 7))
+                    ti.atomic_or(self._words[x // 8, y // 8, z // 8, local >> 5],
+                                 ti.u32(1) << (local & 31))
+
+    def read_bricks(self):
+        """Return world brick coordinates and one dense 512-bit mask per brick."""
+        count = self._count_bricks()
+        coords = np.empty((count, 3), dtype=np.int32)
+        words = np.empty((count, 16), dtype=np.uint32)
+        if count:
+            self._cursor[None] = 0
+            self._read_bricks(coords, words)
+        return coords, words
+
+    @ti.kernel
+    def _count_bricks(self) -> ti.i32:
+        count = 0
+        for brick in ti.grouped(self._leaf):
+            count += 1
+        return count
+
+    @ti.kernel
+    def _read_bricks(self, coords: ti.types.ndarray(dtype=ti.i32, ndim=2),
+                     words: ti.types.ndarray(dtype=ti.u32, ndim=2)):
+        for brick in ti.grouped(self._leaf):
+            row = ti.atomic_add(self._cursor[None], 1)
+            for axis in ti.static(range(3)):
+                coords[row, axis] = brick[axis] + self.lower[axis]
+            for word in range(16):
+                words[row, word] = self._words[brick.x, brick.y, brick.z, word]
