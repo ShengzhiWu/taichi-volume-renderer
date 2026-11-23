@@ -1,10 +1,12 @@
-"""Trace fountain particles through the static stone and water voxels."""
+"""Trace fountain particles through the stone and water voxels."""
+
 import numpy as np
 from numba import njit
 
+
 GRAVITY = 155.
 OFFSET = 512
-STONE = 1
+STONE_CELL = 1
 STANDING_WATER = 2
 DRAIN_OFFSET = 8.15
 
@@ -29,7 +31,7 @@ def trace(cells, starts, velocities, colors, from_liquid, duration, packet_phase
         vx, vy, vz = velocities[i]
         ix, iy, iz = int(np.floor(x)), int(np.floor(y)), int(np.floor(z))
         first = cells[ix, iy, iz]
-        if (from_liquid and first != STANDING_WATER) or (not from_liquid and first in (STONE, STANDING_WATER)):
+        if (from_liquid and first != STANDING_WATER) or (not from_liquid and first in (STONE_CELL, STANDING_WATER)):
             continue
         valid += 1
         dry = first != STANDING_WATER
@@ -66,7 +68,7 @@ def trace(cells, starts, velocities, colors, from_liquid, duration, packet_phase
                     collided = True
                     break
                 cell = cells[ix, iy, iz]
-                if cell == STONE or (cell == STANDING_WATER and dry):
+                if cell == STONE_CELL or (cell == STANDING_WATER and dry):
                     kinds[i] = cell
                     # Move a small distance backward onto the air side of the impacted face.
                     tx0, ty0, tz0 = x+fraction*dx, y+fraction*dy, z+fraction*dz
@@ -119,7 +121,7 @@ def spread_on_surface(cells, hits, headings, lengths, phases):
                 break
             surface = -1
             for level in range(min(iy+2, first_y+3), max(iy-3, first_y-4), -1):
-                if cells[ix, level, iz] not in (STONE, STANDING_WATER):
+                if cells[ix, level, iz] not in (STONE_CELL, STANDING_WATER):
                     if cells[ix, level-1, iz] == STANDING_WATER:
                         surface = level
                         break
@@ -231,7 +233,7 @@ def simulate_water(cells, front, lower, upper, nozzle_height):
     for name, first, end in groups:
         local = kinds[first:end]
         wet = local == STANDING_WATER
-        print(f"{name}: {end-first:,} launched, {np.count_nonzero(local == STONE):,} stone impacts, "
+        print(f"{name}: {end-first:,} launched, {np.count_nonzero(local == STONE_CELL):,} stone impacts, "
               f"{np.count_nonzero(wet):,} water impacts, "
               f"{np.count_nonzero(local == 3):,} exited scene", flush=True)
         if not np.any(wet):

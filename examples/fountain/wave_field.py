@@ -1,5 +1,7 @@
-"""Shared wave coefficients for the CXW surface and the refractive normals."""
+"""Compute the waves that shape the fountain water surface."""
+
 import numpy as np
+
 
 # Two dominant wave vectors have half the spatial frequencies of v6.
 MODES = (
