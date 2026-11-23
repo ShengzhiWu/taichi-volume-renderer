@@ -25,11 +25,12 @@ def _leaves(brick, origin, sizes, level, indexed):
     else:
         uniform = isinstance(brick, int) if indexed else not isinstance(brick[0], tuple)
         if uniform and size >= 128:
-            yield tuple(o // size for o in origin), brick, True, size
+            yield tuple(o // size for o in origin), brick, True, size, 0
         else:
             ranges = (range(o // 8, (o + size) // 8) for o in origin)
-            for coord in product(*ranges):
-                yield coord, brick, uniform, 8
+            for index, coord in enumerate(product(*ranges)):
+                group_size = size if uniform and size > 8 and index == 0 else 0
+                yield coord, brick, uniform, 8, group_size
 
 
 def _optical_columns(schema):
@@ -107,11 +108,12 @@ def _load_bricks(read_roots, sizes, materials, columns, density):
     width = (len(materials) - 1).bit_length() if indexed else 0
     tables = {}
     uniform_bricks = []
+    uniform_light_groups = []
     index = 0
     for coord, brick in read_roots(_read_exact if indexed else None):
         origin = tuple(axis * sizes[0] for axis in coord)
         mixed = []
-        for (x, y, z), values, uniform, size in _leaves(brick, origin, sizes, 0, indexed):
+        for (x, y, z), values, uniform, size, group_size in _leaves(brick, origin, sizes, 0, indexed):
             if size >= 128:
                 row = regular_count + len(uniform_bricks)
                 uniform_bricks.append((size.bit_length() - 1, x, y, z, row))
@@ -120,6 +122,8 @@ def _load_bricks(read_roots, sizes, materials, columns, density):
                 else:
                     _copy_rgba(blocks[row], np.asarray(values, dtype=np.float32), columns, density)
                 continue
+            if group_size:
+                uniform_light_groups.append((index, group_size))
             sector = (x // 16, y // 16, z // 16)
             table = tables.get(sector)
             if table is None:
@@ -148,7 +152,7 @@ def _load_bricks(read_roots, sizes, materials, columns, density):
     brick_ids = (np.stack([tables[coord] for coord in sectors]) if sectors
                  else np.empty((0, 4096), dtype=np.int32))
     return SparseVolumeData([entity], np.asarray(sectors, dtype=np.int32).reshape(-1, 3),
-                            brick_ids, blocks, None, tuple(sorted(uniform_bricks)))
+                            brick_ids, blocks, None, tuple(sorted(uniform_bricks)), tuple(uniform_light_groups))
 
 
 def load_vxb_volume(path, density):

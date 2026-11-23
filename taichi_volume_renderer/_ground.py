@@ -141,7 +141,7 @@ def _thicken_ground(data, depth):
     uniform = tuple((*brick[:-1], brick[-1] + len(additions)) for brick in data.uniform_bricks)
     brick_ids = np.stack(tables) if tables else data.brick_ids
     return SparseVolumeData(entities, np.asarray(sectors, dtype=np.int32).reshape(-1, 3),
-                            brick_ids, blocks, data.player_pose, uniform)
+                            brick_ids, blocks, data.player_pose, uniform, data.uniform_light_groups)
 
 
 def _world_centers(entity, tile, columns, z, axes, rotation):

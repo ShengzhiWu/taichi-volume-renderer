@@ -1,3 +1,5 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,9 +11,46 @@ from taichi_volume_renderer import DisplayWindow
 from taichi_volume_renderer.sparse_data import Entity, SparseVolumeData, index_brick_values
 from taichi_volume_renderer.sparse_smoke import SparseSmokeScene
 from taichi_volume_renderer.vdb import _density_bricks
+from taichi_volume_renderer.vxb import MaterialField, VxbScene, save_vxb
 
 
 class SparseSmokeTest(unittest.TestCase):
+    def test_uniform_bricks_share_center_lighting(self):
+        ti.init(arch=ti.cpu)
+        self.addCleanup(ti.reset)
+        fields = tuple(MaterialField(name, "f32") for name in ("r", "g", "b", "density"))
+        palette = ((0., 0., 0., 0.), (1., 1., 1., .01))
+        mixed = (1,) + (0,) * 511
+        world = VxbScene(fields, palette, (128, 32, 8),
+                         {(-1, 0, 0): 1, (0, 0, 0): {0: 1, 1: {0: 1, 1: mixed}}})
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "world.vxb"
+            save_vxb(path, world)
+            scene = SparseSmokeScene.from_file(
+                path, directional_light=((1., 0., 0.), (1., .5, .25)), light_step_length=1.,
+            )
+        scene.update_light()
+
+        self.assertEqual(scene._uniform_light_cache.shape, (3,))
+        self.assertEqual(scene._light_cache.shape, (1, 512))
+        output = ti.Vector.field(3, dtype=ti.f32, shape=(4, 2))
+
+        @ti.kernel
+        def sample():
+            output[0, 0] = scene._voxel_light(0, 0)
+            output[0, 1] = scene._sample_light(ti.Vector([16., 16., 16.]))
+            output[1, 0] = scene._voxel_light(63, 511)
+            output[1, 1] = output[0, 1]
+            output[2, 0] = scene._voxel_light(64, 511)
+            output[2, 1] = scene._sample_light(ti.Vector([36., 4., 4.]))
+            output[3, 0] = scene._voxel_light(66, 0)
+            output[3, 1] = scene._sample_light(ti.Vector([-64., 64., 64.]))
+
+        sample()
+        values = output.to_numpy()
+        np.testing.assert_allclose(values[:, 0], values[:, 1])
+        self.assertFalse(np.allclose(values[0, 0], values[3, 0]))
+
     def test_translucent_voxels_across_empty_sectors(self):
         ti.init(arch=ti.cpu)
         self.addCleanup(ti.reset)

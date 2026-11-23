@@ -133,7 +133,7 @@ window = DisplayWindow.from_file("path/to/world.vxb")
 window.show()
 ```
 
-The VXB importer adapts the file's hierarchy to the renderer's sector and brick layout. Uniform bricks that span whole sectors stay compact and use on-demand lighting. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
+The VXB importer adapts the file's hierarchy to the renderer's sector and brick layout. Uniform bricks that span whole sectors stay compact. The renderer caches one light value at the center of each uniform brick and caches light per voxel in mixed bricks. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
 
 | Sparse storage mode | Behavior |
 | --- | --- |
@@ -169,7 +169,7 @@ See `examples/canvas.py`.
 
 The Python API defaults to point lighting. To use a directional light, pass the direction toward the source and its RGB intensity. For example, `directional_light=((0, 0, 1), (8, 8, 8))` gives white light from above. Set `ambient_light=(R, G, B)` to add unshadowed light. Its default is `(0, 0, 0)`.
 
-Lighting is cached at voxel centers. When the directional and ambient lights each have equal RGB components, the cache uses one channel. Sparse scenes store the cache in the brick pool. Light rays advance three voxel widths per step by default.
+Lighting is cached at voxel centers in mixed bricks and at brick centers in uniform bricks. When the directional and ambient lights each have equal RGB components, the cache uses one channel. Light rays advance three voxel widths per step by default.
 
 The sparse CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting, `--no-lighting` for uniform illumination, or `--ambient-light R G B` to set the ambient light.
 

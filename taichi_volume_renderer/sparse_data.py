@@ -32,6 +32,8 @@ class SparseVolumeData:
     player_pose: object
     # For single-entity scenes: (log2(size), x, y, z, material brick row).
     uniform_bricks: tuple = ()
+    # (First regular row, edge length) for VXB uniform bricks expanded into 8³ rows.
+    uniform_light_groups: tuple = ()
 
 
 def index_brick_values(blocks):

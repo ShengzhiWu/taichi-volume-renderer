@@ -352,10 +352,6 @@ class SparseSmokeScene(_OrbitScene):
     def _init_light_cache(self, data, intensities):
         # Store exactly the same light value once when all sources are achromatic.
         self._light_channels = light_cache_channels(intensities)
-        if not self._regular_brick_count:
-            return
-        self._light_cache = self._brick_field(self._light_channels, self._regular_brick_count)
-
         locations = np.full((self._regular_brick_count, 4), -1, dtype=np.int32)
         for entity_id, entity in enumerate(data.entities):
             rows = slice(entity.first_sector, entity.end_sector)
@@ -366,29 +362,88 @@ class SparseSmokeScene(_OrbitScene):
             )
             locations[brick_ids, :3] = data.sectors[rows][sector_ids] * 128 + local * 8
             locations[brick_ids, 3] = entity_id
-        self._brick_locations = ti.Vector.field(4, dtype=ti.i32, shape=self._regular_brick_count)
-        self._brick_locations.from_numpy(locations)
+
+        regular = data.blocks[:self._regular_brick_count]
+        uniform = locations[:, 3] >= 0
+        axes = tuple(range(1, regular.ndim))
+        for start in range(0, len(regular), 8192):
+            bricks = regular[start:start + 8192]
+            uniform[start:start + len(bricks)] &= np.all(bricks == bricks[:, :1], axis=axes)
+
+        # A nonnegative row addresses the per-voxel cache. A negative row
+        # addresses the per-brick cache, including VXB bricks split on import.
+        light_rows = np.zeros(self.brick_count, dtype=np.int32)
+        group_centers = []
+        for first, size in data.uniform_light_groups:
+            end = first + (size // 8)**3
+            if uniform[first:end].all() and np.all(regular[first:end, 0] == regular[first, 0]):
+                light_rows[first:end] = -(len(group_centers) + 1)
+                group_centers.append(np.r_[locations[first, :3] + size * .5, locations[first, 3]])
+
+        shared = np.flatnonzero(uniform & (light_rows[:len(regular)] == 0))
+        light_rows[shared] = -(len(group_centers) + 1 + np.arange(len(shared), dtype=np.int32))
+        uniform_centers = [np.asarray(group_centers, dtype=np.float64).reshape(-1, 4),
+                           locations[shared].astype(np.float64)]
+        uniform_centers[1][:, :3] += 4.
+        if self._has_uniform_bricks:
+            bricks = np.asarray(data.uniform_bricks, dtype=np.int32)
+            width = np.exp2(bricks[:, :1].astype(np.float32))
+            large_centers = (bricks[:, 1:4].astype(np.float32) + .5) * width
+            light_rows[bricks[:, 4]] = -(len(group_centers) + len(shared) + 1 + np.arange(len(bricks), dtype=np.int32))
+            uniform_centers.append(np.column_stack((large_centers, np.zeros(len(bricks), dtype=np.float32))))
+        centers = np.concatenate(uniform_centers)
+        self._uniform_light_count = len(centers)
+        if self._uniform_light_count:
+            entity_ids = centers[:, 3].astype(np.intp)
+            rotations = np.asarray([entity.rotation for entity in data.entities], dtype=np.float32)
+            positions = np.asarray([entity.position for entity in data.entities], dtype=np.float32)
+            world_centers = np.einsum("nij,nj->ni", rotations[entity_ids], centers[:, :3]) + positions[entity_ids]
+            self._uniform_light_centers = _upload_lookup_field(world_centers, 3)
+            self._uniform_light_cache = ti.Vector.field(self._light_channels, dtype=ti.f32,
+                                                        shape=self._uniform_light_count)
+
+        mixed = np.flatnonzero(~uniform).astype(np.int32)
+        self._mixed_light_count = len(mixed)
+        if self._mixed_light_count:
+            light_rows[mixed] = np.arange(self._mixed_light_count, dtype=np.int32)
+            self._light_cache = self._brick_field(self._light_channels, self._mixed_light_count)
+            self._brick_locations = ti.Vector.field(4, dtype=ti.i32, shape=self._mixed_light_count)
+            self._brick_locations.from_numpy(locations[mixed])
+            self._mixed_light_bricks = _upload_lookup_field(mixed)
+        if self._uniform_light_count:
+            self._light_rows = _upload_lookup_field(light_rows)
 
     def update_light(self):
-        """Precompute lighting for occupied voxels before rendering."""
+        """Precompute per-voxel and per-uniform-brick lighting before rendering."""
         if self._lighting:
             # Use short launches for desktop GPUs that enforce a kernel timeout.
             batch_size = 512
-            for first in range(0, self._regular_brick_count, batch_size):
-                self._cache_lighting(first, min(first + batch_size, self._regular_brick_count))
+            for first in range(0, self._mixed_light_count, batch_size):
+                self._cache_lighting(first, min(first + batch_size, self._mixed_light_count))
+            uniform_batch_size = 8192
+            for first in range(0, self._uniform_light_count, uniform_batch_size):
+                self._cache_uniform_lighting(first, min(first + uniform_batch_size, self._uniform_light_count))
             ti.sync()
 
     @ti.kernel
     def _cache_lighting(self, first: ti.i32, end: ti.i32):
-        for brick, voxel in ti.ndrange((first, end), 512):
-            location = self._brick_locations[brick]
+        for row, voxel in ti.ndrange((first, end), 512):
+            location = self._brick_locations[row]
+            brick = self._mixed_light_bricks[row]
             if location.w >= 0 and self._sample_voxel(brick, voxel, False).w != 0:
                 coordinates = location.xyz + ti.Vector([voxel & 7, (voxel >> 3) & 7, voxel >> 6])
                 entity = location.w
                 center = self._positions[entity] + self._rotations[entity] @ (ti.cast(coordinates, ti.f32) + 0.5)
                 light = self._sample_light(center)
                 for channel in ti.static(range(self._light_channels)):
-                    self._light_cache[brick, voxel][channel] = light[channel]
+                    self._light_cache[row, voxel][channel] = light[channel]
+
+    @ti.kernel
+    def _cache_uniform_lighting(self, first: ti.i32, end: ti.i32):
+        for row in range(first, end):
+            light = self._sample_light(self._uniform_light_centers[row])
+            for channel in ti.static(range(self._light_channels)):
+                self._uniform_light_cache[row][channel] = light[channel]
 
     @ti.func
     def _block_code(self, brick, voxel):
@@ -412,21 +467,22 @@ class SparseSmokeScene(_OrbitScene):
         return sample
 
     @ti.func
-    def _voxel_light(self, brick, index, voxel, entity):
+    def _voxel_light(self, brick, index):
         light = ti.Vector([1.0, 1.0, 1.0])
         if ti.static(self._lighting):
-            use_cache = True
-            if ti.static(self._has_uniform_bricks):
-                use_cache = brick < self._regular_brick_count
-                if not use_cache:
-                    center = self._positions[entity] + self._rotations[entity] @ (ti.cast(voxel, ti.f32) + 0.5)
-                    light = self._sample_light(center)
-            if ti.static(self._regular_brick_count):
-                if use_cache:
-                    if ti.static(self._light_channels == 1):
-                        light *= self._light_cache[brick, index][0]
-                    else:
-                        light = self._light_cache[brick, index]
+            row = brick
+            value = ti.Vector.zero(ti.f32, self._light_channels)
+            if ti.static(self._uniform_light_count):
+                row = self._light_rows[brick]
+                if row < 0:
+                    value = self._uniform_light_cache[-row - 1]
+            if ti.static(self._mixed_light_count):
+                if row >= 0:
+                    value = self._light_cache[row, index]
+            if ti.static(self._light_channels == 1):
+                light *= value[0]
+            else:
+                light = value
         return light
 
     @ti.func
@@ -657,7 +713,7 @@ class SparseSmokeScene(_OrbitScene):
                     if ti.static(self._refractive or self._emissive):
                         code = self._block_code(brick, voxel)
                     if material.w != 0:
-                        radiance = material.xyz * self._voxel_light(brick, voxel, coordinates, entity)
+                        radiance = material.xyz * self._voxel_light(brick, voxel)
                         if ti.static(self._emissive):
                             radiance += self._emission[code]
                         lit_color += radiance * material.w
