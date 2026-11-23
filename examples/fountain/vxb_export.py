@@ -6,7 +6,7 @@ from threadpoolctl import threadpool_limits
 from taichi_volume_renderer.cxw import packed_color_materials
 from taichi_volume_renderer.materials import cluster_materials
 from taichi_volume_renderer.math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
-from taichi_volume_renderer.vxb import CameraPose, MaterialField, VxbScene, save_vxb
+from taichi_volume_renderer.vxb import CameraPose, MaterialField, VxbScene, merge_uniform_children, save_vxb
 
 from .scene import BASIN_LEVEL, EYE, FOAM_CODE, LOWER, TARGET, UPPER, WATER_CODE, sectors
 from .wave_field import water_wave
@@ -43,12 +43,6 @@ def generate(path):
     index_for_code[codes] = np.arange(len(codes))
     fields = tuple(MaterialField(name, "f32") for name in ("r", "g", "b", "density", "ior", "normal_x", "normal_y", "normal_z"))
     materials = [tuple(palette[code]) + (np.float32(1.33 if code == WATER_CODE else 1.), 0., 0., 0.) for code in codes]
-
-    def uniform_or_children(children):
-        value = next(iter(children.values()))
-        if len(children) == 64 and isinstance(value, int) and all(child == value for child in children.values()):
-            return value
-        return children
 
     airborne = len(materials)
     materials.append((.50, .56, .59, .022, np.float32(1.33), 0., 0., 0.))
@@ -135,8 +129,9 @@ def generate(path):
             else:
                 brick = tuple(values.reshape(8, 8, 8).transpose(1, 0, 2).ravel().tolist())
             groups.setdefault(outer, {})[inner] = brick
-        roots[(int(bx), int(bz), int(by))] = uniform_or_children(
-            {slot: uniform_or_children(children) for slot, children in groups.items()})
+        roots[(int(bx), int(bz), int(by))] = merge_uniform_children(
+            {slot: merge_uniform_children(children, 4) for slot, children in groups.items()}, 4,
+        )
     if len(normal_ids) > POOL_NORMAL_CLUSTERS:
         normals = np.asarray([row[5:] for row in materials[first_normal:]])
         weights = normal_weights[first_normal:len(materials)]
@@ -148,7 +143,7 @@ def generate(path):
 
         def remap_brick(brick):
             if isinstance(brick, dict):
-                return uniform_or_children({slot: remap_brick(child) for slot, child in brick.items()})
+                return merge_uniform_children({slot: remap_brick(child) for slot, child in brick.items()}, 4)
             if isinstance(brick, int):
                 return int(remap[brick])
             values = remap[np.asarray(brick, dtype=np.uint16)]

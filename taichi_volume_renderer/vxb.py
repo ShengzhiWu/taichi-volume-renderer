@@ -52,6 +52,22 @@ class VxbScene:
     camera: CameraPose | None = None
 
 
+def merge_uniform_children(children: dict[int, Brick], children_per_axis: int) -> Brick:
+    """Collapse a full set of equal uniform child bricks into one value.
+
+    Child slots must follow the VXB layout. Missing slots are air, so a
+    partial branch is returned as-is. Supports indices and direct rows.
+    """
+    if children and len(children) == children_per_axis**3:
+        first = next(iter(children.values()))
+        uniform = isinstance(first, Integral) or (
+            isinstance(first, tuple) and first and not isinstance(first[0], tuple)
+        )
+        if uniform and all(child == first for child in children.values()):
+            return first
+    return children
+
+
 def _read_exact(stream, size):
     data = stream.read(size)
     if len(data) != size:
