@@ -4,6 +4,7 @@ from dataclasses import replace
 from itertools import product
 import math
 from numbers import Integral
+from time import perf_counter
 
 import numpy as np
 from scipy.ndimage import maximum_filter
@@ -112,8 +113,11 @@ def merge_hidden_materials(
             region = tuple(slice(a, a + size) for a in start)
             tile[region] = values
 
+    started = perf_counter()
     for coord, brick in scene.bricks.items():
         rasterize(brick, tuple(axis * sizes[0] for axis in reversed(coord)), 0)
+    rasterized = perf_counter()
+    print(f"Hidden materials: build target grid {rasterized - started:.2f} s", flush=True)
 
     # Zero is a lower bound for exit transmission inside a target. Values below
     # the cutoff cannot propagate back above it, so discard them as we converge.
@@ -131,6 +135,8 @@ def merge_hidden_materials(
                 changed = True
         if not changed:
             break
+    propagated = perf_counter()
+    print(f"Hidden materials: propagate transmission {propagated - rasterized:.2f} s", flush=True)
 
     hidden = {}
     counts = np.zeros(len(targets) + 1, dtype=np.int64)
@@ -139,6 +145,8 @@ def merge_hidden_materials(
         if mask.any():
             hidden[coord] = mask
             counts += np.bincount(tile[mask].astype(np.intp), minlength=len(counts))
+    classified = perf_counter()
+    print(f"Hidden materials: classify and count voxels {classified - propagated:.2f} s", flush=True)
     if not hidden:
         return scene
     winner = int(counts.argmax())
@@ -187,7 +195,11 @@ def merge_hidden_materials(
             for slot, child in children.items()
         }, ratio)
 
-    return replace(scene, bricks={
+    result = replace(scene, bricks={
         coord: replace_brick(brick, tuple(axis * sizes[0] for axis in reversed(coord)), 0)
         for coord, brick in scene.bricks.items()
     })
+    finished = perf_counter()
+    print(f"Hidden materials: replace and merge bricks {finished - classified:.2f} s "
+          f"(total {finished - started:.2f} s)", flush=True)
+    return result
