@@ -1,10 +1,10 @@
 """Write the fountain as a Z-up VXB scene with 200 pool surface normals."""
 
 import numpy as np
-from sklearn.cluster import KMeans
 from threadpoolctl import threadpool_limits
 
 from taichi_volume_renderer.cxw import packed_color_materials
+from taichi_volume_renderer.materials import cluster_materials
 from taichi_volume_renderer.math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 from taichi_volume_renderer.vxb import CameraPose, MaterialField, VxbScene, save_vxb
 
@@ -140,12 +140,9 @@ def generate(path):
     if len(normal_ids) > POOL_NORMAL_CLUSTERS:
         normals = np.asarray([row[5:] for row in materials[first_normal:]])
         weights = normal_weights[first_normal:len(materials)]
-        model = KMeans(n_clusters=POOL_NORMAL_CLUSTERS, n_init=3, random_state=21)
         with threadpool_limits(limits=4, user_api="openmp"):
-            model.fit(normals, sample_weight=weights)
-        centers = model.cluster_centers_
+            centers, labels = cluster_materials(normals, weights, POOL_NORMAL_CLUSTERS)
         centers /= np.linalg.norm(centers, axis=1, keepdims=True)
-        labels = model.labels_
         remap = np.arange(len(materials), dtype=np.uint16)
         remap[first_normal:] = first_normal + labels
 
