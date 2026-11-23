@@ -59,6 +59,20 @@ Open a VXB scene with the sparse viewer.
 python -m examples.sparse_smoke "path/to/world.vxb" --camera saved
 ```
 
+To save a scene, build a `VxbScene` and pass it to `save_vxb()`. This example writes one uniform 8³ brick at the origin. Material index `0` is reserved for air.
+
+```python
+from taichi_volume_renderer.vxb import MaterialField, VxbScene, save_vxb
+
+scene = VxbScene(
+    fields=(MaterialField("density", "f32"),),
+    materials=((0.0,), (0.5,)),
+    brick_sizes=(8,),
+    bricks={(0, 0, 0): 1},
+)
+save_vxb("world.vxb", scene)
+```
+
 #### Limestone fountain example
 
 The procedural fountain in `examples/fountain` generates carved limestone, water jets, and foam. The VXB stores a saved camera and 200 clustered pool-surface normals. Caustics are baked when the viewer loads the scene.
