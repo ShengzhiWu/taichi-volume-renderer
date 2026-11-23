@@ -11,6 +11,7 @@ from taichi_volume_renderer.cxw import packed_color_materials
 from taichi_volume_renderer.materials import cluster_materials
 from taichi_volume_renderer.math import rotation_matrix_to_quaternion, rotation_quaternion_to_matrix
 from taichi_volume_renderer.vxb import CameraPose, MaterialField, VxbScene, merge_uniform_children, save_vxb
+from taichi_volume_renderer.vxb_optimize import merge_hidden_materials
 
 from .water_particles import DRAIN_OFFSET, simulate_water
 from .wave_field import hash01, value_noise, water_wave
@@ -19,9 +20,10 @@ from .wave_field import hash01, value_noise, water_wave
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="Path for the generated VXB")
+    parser.add_argument("--no-merge-hidden-materials", action="store_true", help="Preserve interior stone colors")
     args = parser.parse_args()
 
-    generate(args.output)
+    generate(args.output, merge_hidden=not args.no_merge_hidden_materials)
 
 
 # VXB export
@@ -43,7 +45,7 @@ def _camera():
     return CameraPose(tuple(EYE[[0, 2, 1]]), tuple(xyzw))
 
 
-def generate(path):
+def generate(path, *, merge_hidden=True):
     world = dict(sectors())
     palette = packed_color_materials(.65)
     palette[WATER_CODE] = (.31, .42, .43, .0024)
@@ -168,8 +170,12 @@ def generate(path):
         roots = {coord: remap_brick(brick) for coord, brick in roots.items()}
         materials[first_normal:] = [water + tuple(normal) for normal in centers]
 
+    scene = VxbScene(fields, tuple(materials), (128, 32, 8), roots, _camera())
+    stone_materials = [index for index, code in enumerate(codes) if code & 0x8000 and code != FOAM_CODE]
+    del world
+    scene = merge_hidden_materials(scene, stone_materials, enabled=merge_hidden)
     path.parent.mkdir(parents=True, exist_ok=True)
-    save_vxb(path, VxbScene(fields, tuple(materials), (128, 32, 8), roots, _camera()))
+    save_vxb(path, scene)
     print(f"Saved {path} ({path.stat().st_size / 1e6:.2f} MB, {len(materials)} materials)")
 
 

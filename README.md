@@ -73,9 +73,11 @@ scene = VxbScene(
 save_vxb("world.vxb", scene)
 ```
 
+To simplify hidden material variation before saving, call `merge_hidden_materials(scene, target_materials)` from `taichi_volume_renderer.vxb_optimize`. Pass palette indices or direct material rows. The function estimates transmission from the selected region's boundary using its voxel densities. Below `transmission_threshold=0.01`, it replaces selected voxels with the most common hidden material and merges uniform bricks. Pass `enabled=False` to preserve the original scene.
+
 #### Limestone fountain example
 
-The procedural fountain in `examples/fountain` generates carved limestone, water jets, and foam. The VXB stores a saved camera and 200 clustered pool-surface normals. Caustics are baked when the viewer loads the scene.
+The procedural fountain in `examples/fountain` generates carved limestone, water jets, and foam. The VXB stores a saved camera and 200 clustered pool-surface normals. Caustics are baked when the viewer loads the scene. Pass `--no-merge-hidden-materials` when generating the scene to preserve interior stone colors.
 
 From a source checkout, install the project and Numba, then generate the scene.
 
