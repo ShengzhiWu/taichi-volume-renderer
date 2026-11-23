@@ -18,6 +18,17 @@ class Entity:
 
 
 @dataclass
+class BrickHierarchy:
+    """Native brick levels and compact child tables for a VXB scene."""
+
+    sizes: tuple
+    # (child slot, first child or bitwise complement of brick row, child count).
+    # The root nodes come first in the same order as SparseVolumeData.sectors.
+    nodes: np.ndarray
+    mixed_origins: np.ndarray
+
+
+@dataclass
 class SparseVolumeData:
     """Sector coordinates, brick indices, and a compact pool of occupied bricks.
 
@@ -32,8 +43,7 @@ class SparseVolumeData:
     player_pose: object
     # For single-entity scenes: (log2(size), x, y, z, material brick row).
     uniform_bricks: tuple = ()
-    # (First regular row, edge length) for VXB uniform bricks expanded into 8³ rows.
-    uniform_light_groups: tuple = ()
+    hierarchy: BrickHierarchy | None = None
 
 
 def index_brick_values(blocks):

@@ -8,10 +8,12 @@ import numpy as np
 import taichi as ti
 
 from taichi_volume_renderer import DisplayWindow
+from taichi_volume_renderer._ground import _thicken_ground
 from taichi_volume_renderer.sparse_data import Entity, SparseVolumeData, index_brick_values
 from taichi_volume_renderer.sparse_smoke import SparseSmokeScene
 from taichi_volume_renderer.vdb import _density_bricks
 from taichi_volume_renderer.vxb import MaterialField, VxbScene, save_vxb
+from taichi_volume_renderer.vxb_scene import load_vxb_volume
 
 
 class SparseSmokeTest(unittest.TestCase):
@@ -26,9 +28,13 @@ class SparseSmokeTest(unittest.TestCase):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "world.vxb"
             save_vxb(path, world)
-            scene = SparseSmokeScene.from_file(
-                path, directional_light=((1., 0., 0.), (1., .5, .25)), light_step_length=1.,
-            )
+            data, materials, _, _, _ = load_vxb_volume(path, density=.22)
+        self.assertEqual(data.hierarchy.sizes, (128, 32, 8))
+        self.assertEqual(data.hierarchy.nodes.shape, (6, 3))
+        self.assertEqual(len(data.blocks), 4)
+        self.assertEqual([brick[0] for brick in data.uniform_bricks], [7, 5, 3])
+        scene = SparseSmokeScene(data, materials=materials,
+                                 directional_light=((1., 0., 0.), (1., .5, .25)), light_step_length=1.)
         scene.update_light()
 
         self.assertEqual(scene._uniform_light_cache.shape, (3,))
@@ -37,19 +43,57 @@ class SparseSmokeTest(unittest.TestCase):
 
         @ti.kernel
         def sample():
-            output[0, 0] = scene._voxel_light(0, 0)
+            output[0, 0] = scene._voxel_light(2, 0)
             output[0, 1] = scene._sample_light(ti.Vector([16., 16., 16.]))
-            output[1, 0] = scene._voxel_light(63, 511)
+            output[1, 0] = scene._voxel_light(2, 511)
             output[1, 1] = output[0, 1]
-            output[2, 0] = scene._voxel_light(64, 511)
+            output[2, 0] = scene._voxel_light(3, 511)
             output[2, 1] = scene._sample_light(ti.Vector([36., 4., 4.]))
-            output[3, 0] = scene._voxel_light(66, 0)
+            output[3, 0] = scene._voxel_light(1, 0)
             output[3, 1] = scene._sample_light(ti.Vector([-64., 64., 64.]))
 
         sample()
         values = output.to_numpy()
         np.testing.assert_allclose(values[:, 0], values[:, 1])
         self.assertFalse(np.allclose(values[0, 0], values[3, 0]))
+
+    def test_native_lookup_uses_file_levels_for_leaves_and_gaps(self):
+        ti.init(arch=ti.cpu)
+        self.addCleanup(ti.reset)
+        fields = (MaterialField("density", "f32"),)
+        world = VxbScene(fields, ((0.,), (.1,)), (64, 16, 8),
+                         {(-1, 0, 0): {0: 1, 1: {0: (0,) * 511 + (1,)}}})
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "world.vxb"
+            save_vxb(path, world)
+            scene = SparseSmokeScene.from_file(path, lighting=False)
+        output = ti.Vector.field(3, dtype=ti.f32, shape=4)
+
+        @ti.kernel
+        def sample():
+            for ray in range(4):
+                x = ti.Vector([-63.5, -40.5, -39.5, -31.5])[ray]
+                advance, row, index, _ = scene._lookup(ti.Vector([x, 7.5, 7.5]),
+                                                      ti.Vector([1., 0., 0.]), 0., 1e30, 0)
+                output[ray] = ti.Vector([advance, ti.cast(row, ti.f32), ti.cast(index, ti.f32)])
+
+        sample()
+        np.testing.assert_array_equal(output.to_numpy(), [[0, 1, 0], [0, 0, 511],
+                                                          [7.5, -1, 0], [15.5, -1, 0]])
+
+    def test_ground_edit_preserves_direct_vxb_uniform_leaf_size(self):
+        fields = (MaterialField("density", "f32"),)
+        world = VxbScene(fields, None, (32, 8), {(-1, 0, 0): (.1,)})
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "world.vxb"
+            save_vxb(path, world)
+            data, _, _, _, _ = load_vxb_volume(path, density=.22)
+        edited = _thicken_ground(data, 1)
+        self.assertEqual(edited.hierarchy.sizes, (32, 8))
+        self.assertEqual(len(edited.uniform_bricks), 1)
+        self.assertEqual(edited.uniform_bricks[0][:4], (5, -1, 0, 0))
+        self.assertEqual(len(edited.hierarchy.mixed_origins), 16)
+        np.testing.assert_array_equal(edited.hierarchy.mixed_origins[:, 2], -8)
 
     def test_translucent_voxels_across_empty_sectors(self):
         ti.init(arch=ti.cpu)

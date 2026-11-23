@@ -1,36 +1,16 @@
-"""Adapt VXB files to the sparse renderer's existing 128/8 storage."""
+"""Load native VXB brick hierarchies into renderer buffers."""
 
-from itertools import product
+from dataclasses import replace
 
 import numpy as np
 
 from .math import rotation_quaternion_to_matrix
-from .sparse_data import Entity, SparseVolumeData
+from .sparse_data import BrickHierarchy, Entity, SparseVolumeData
 from .vxb import _open_vxb, _read_exact
 
 
 _NORMAL_FIELDS = ("normal_x", "normal_y", "normal_z")
 _EMISSION_FIELDS = ("emission_r", "emission_g", "emission_b")
-
-
-def _leaves(brick, origin, sizes, level, indexed):
-    size = sizes[level]
-    if isinstance(brick, dict):
-        child_size = sizes[level + 1]
-        n = size // child_size
-        for slot, child in brick.items():
-            coord = (slot % n, slot // n % n, slot // (n * n))
-            start = tuple(a + b * child_size for a, b in zip(origin, coord))
-            yield from _leaves(child, start, sizes, level + 1, indexed)
-    else:
-        uniform = isinstance(brick, int) if indexed else not isinstance(brick[0], tuple)
-        if uniform and size >= 128:
-            yield tuple(o // size for o in origin), brick, True, size, 0
-        else:
-            ranges = (range(o // 8, (o + size) // 8) for o in origin)
-            for index, coord in enumerate(product(*ranges)):
-                group_size = size if uniform and size > 8 and index == 0 else 0
-                yield coord, brick, uniform, 8, group_size
 
 
 def _optical_columns(schema):
@@ -56,14 +36,32 @@ def _skip_mixed(stream, size):
     _read_exact(stream, size)
 
 
-def _count_bricks(brick, sizes, counts, level=0):
+def _tree_counts(brick, indexed, counts):
+    counts[0] += 1
     if isinstance(brick, dict):
         for child in brick.values():
-            _count_bricks(child, sizes, counts, level + 1)
-    elif sizes[level] >= 128:
-        counts[1] += 1
+            _tree_counts(child, indexed, counts)
     else:
-        counts[0] += (sizes[level] // 8)**3
+        uniform = isinstance(brick, int) if indexed else not isinstance(brick[0], tuple)
+        counts[2 if uniform else 1] += 1
+
+
+def _write_tree(nodes, index, next_index, slot, brick, origin, sizes, write_leaf):
+    if not isinstance(brick, dict):
+        nodes[index] = slot, ~write_leaf(brick, origin, sizes[0]), 0
+        return next_index
+    count = len(brick)
+    nodes[index] = slot, next_index, count
+    child_start = next_index
+    next_index += count
+    width = sizes[1]
+    ratio = sizes[0] // width
+    for row, (child_slot, child) in enumerate(sorted(brick.items()), child_start):
+        x, y, z = child_slot % ratio, child_slot // ratio % ratio, child_slot // (ratio * ratio)
+        child_origin = (origin[0] + width * x, origin[1] + width * y, origin[2] + width * z)
+        next_index = _write_tree(nodes, row, next_index, child_slot, child, child_origin,
+                                 sizes[1:], write_leaf)
+    return next_index
 
 
 def _write_mixed_indices(blocks, mixed, width, material_count):
@@ -84,75 +82,115 @@ def _write_mixed_indices(blocks, mixed, width, material_count):
 
 
 def _load_bricks(read_roots, sizes, materials, columns, density):
-    # Count ordinary rows and large uniform rows before allocating the voxel pool.
+    indexed = materials is not None
     roots = []
-    counts = [0, 0]
-    for coord, brick in read_roots(_skip_mixed):
+    counts = [0, 0, 0]
+    for coord, brick in read_roots(_skip_mixed if indexed else None):
         roots.append(coord)
-        _count_bricks(brick, sizes, counts)
-    regular_count, uniform_count = counts
-    brick_count = regular_count + uniform_count
+        _tree_counts(brick, indexed, counts)
     if not roots:
         raise ValueError("VXB world has no occupied bricks")
-
-    coordinates = np.array(roots, dtype=np.int64)
+    node_count, mixed_count, uniform_count = counts
+    coordinates = np.asarray(roots, dtype=np.int64)
     lower = coordinates.min(axis=0) * sizes[0]
     upper = (coordinates.max(axis=0) + 1) * sizes[0]
     limits = np.iinfo(np.int32)
-    if np.any(lower < limits.min) or np.any(upper > limits.max - 127):
+    if np.any(lower < limits.min) or np.any(upper > limits.max):
         raise ValueError("VXB world is outside the sparse renderer's signed voxel coordinates")
 
-    indexed = materials is not None
+    brick_count = mixed_count + uniform_count
     blocks = (np.empty((brick_count, 512), dtype=np.uint16) if indexed
               else np.empty((brick_count, 512, 4), dtype=np.float32))
     width = (len(materials) - 1).bit_length() if indexed else 0
-    tables = {}
+    nodes = np.empty((node_count, 3), dtype=np.int32)
+    mixed_origins = np.empty((mixed_count, 3), dtype=np.int32)
     uniform_bricks = []
-    uniform_light_groups = []
-    index = 0
-    for coord, brick in read_roots(_read_exact if indexed else None):
-        origin = tuple(axis * sizes[0] for axis in coord)
-        mixed = []
-        for (x, y, z), values, uniform, size, group_size in _leaves(brick, origin, sizes, 0, indexed):
-            if size >= 128:
-                row = regular_count + len(uniform_bricks)
-                uniform_bricks.append((size.bit_length() - 1, x, y, z, row))
-                if indexed:
-                    blocks[row] = values
-                else:
-                    _copy_rgba(blocks[row], np.asarray(values, dtype=np.float32), columns, density)
-                continue
-            if group_size:
-                uniform_light_groups.append((index, group_size))
-            sector = (x // 16, y // 16, z // 16)
-            table = tables.get(sector)
-            if table is None:
-                table = np.full(4096, -1, dtype=np.int32)
-                tables[sector] = table
-            table[x % 16 + 16 * (y % 16 + 16 * (z % 16))] = index
-            if indexed:
-                if uniform:
-                    blocks[index] = values
-                else:
-                    mixed.append((index, values))
-                    if len(mixed) == 1024:
-                        _write_mixed_indices(blocks, mixed, width, len(materials))
-                        mixed.clear()
-            else:
-                rows = np.asarray(values, dtype=np.float32)
-                _copy_rgba(blocks[index], rows, columns, density)
-                if not uniform:
-                    blocks[index, ~np.any(rows, axis=1)] = 0.
-            index += 1
-        if mixed:
-            _write_mixed_indices(blocks, mixed, width, len(materials))
+    mixed = []
+    mixed_row = 0
 
-    sectors = sorted(tables)
-    entity = Entity(np.zeros(3), np.eye(3), 0, len(sectors), lower, upper)
-    brick_ids = (np.stack([tables[coord] for coord in sectors]) if sectors
-                 else np.empty((0, 4096), dtype=np.int32))
-    return SparseVolumeData([entity], np.asarray(sectors, dtype=np.int32).reshape(-1, 3),
-                            brick_ids, blocks, None, tuple(sorted(uniform_bricks)), tuple(uniform_light_groups))
+    def write_leaf(values, origin, size):
+        nonlocal mixed_row
+        uniform = isinstance(values, int) if indexed else not isinstance(values[0], tuple)
+        if uniform:
+            row = mixed_count + len(uniform_bricks)
+            uniform_bricks.append((size.bit_length() - 1, *(axis // size for axis in origin), row))
+        else:
+            row = mixed_row
+            mixed_row += 1
+            mixed_origins[row] = origin
+        if indexed:
+            if uniform:
+                blocks[row] = values
+            else:
+                mixed.append((row, values))
+                if len(mixed) == 1024:
+                    _write_mixed_indices(blocks, mixed, width, len(materials))
+                    mixed.clear()
+        else:
+            rows = np.asarray(values, dtype=np.float32)
+            _copy_rgba(blocks[row], rows, columns, density)
+            if not uniform:
+                blocks[row, ~np.any(rows, axis=1)] = 0.
+        return row
+
+    next_index = len(roots)
+    for index, (coord, brick) in enumerate(read_roots(_read_exact if indexed else None)):
+        origin = tuple(axis * sizes[0] for axis in coord)
+        next_index = _write_tree(nodes, index, next_index, 0, brick, origin, sizes, write_leaf)
+    if mixed:
+        _write_mixed_indices(blocks, mixed, width, len(materials))
+    entity = Entity(np.zeros(3), np.eye(3), 0, len(roots), lower, upper)
+    hierarchy = BrickHierarchy(sizes, nodes, mixed_origins)
+    return SparseVolumeData([entity], coordinates.astype(np.int32), None,
+                            blocks, None, tuple(uniform_bricks), hierarchy)
+
+
+def restore_edited_hierarchy(data, sizes):
+    """Index explicitly edited ground voxels at the original file levels."""
+    origins = np.empty((len(data.blocks) - len(data.uniform_bricks), 3), dtype=np.int32)
+    for sector, table in zip(data.sectors, data.brick_ids):
+        slots = np.flatnonzero(table >= 0)
+        local = np.column_stack((slots & 15, (slots >> 4) & 15, slots >> 8))
+        origins[table[slots]] = sector * 128 + local * 8
+
+    trees = {}
+
+    def insert(origin, size, row):
+        root = tuple(int(axis) // sizes[0] for axis in origin)
+        tree = trees
+        key = root
+        for parent, child in zip(sizes, sizes[1:]):
+            if size == parent:
+                break
+            tree = tree.setdefault(key, {})
+            if not isinstance(tree, dict):
+                raise ValueError("Ground edit overlaps a uniform VXB brick")
+            ratio = parent // child
+            x, y, z = (int(axis) // child % ratio for axis in origin)
+            key = x + ratio * (y + ratio * z)
+        if key in tree:
+            raise ValueError("Ground edit overlaps a uniform VXB brick")
+        tree[key] = row
+
+    for level, x, y, z, row in data.uniform_bricks:
+        size = 1 << level
+        insert((x * size, y * size, z * size), size, row)
+    for row, origin in enumerate(origins):
+        insert(origin, 8, row)
+
+    roots = sorted(trees)
+    counts = [0, 0, 0]
+    for root in roots:
+        _tree_counts(trees[root], True, counts)
+    nodes = np.empty((counts[0], 3), dtype=np.int32)
+    next_index = len(roots)
+    for index, root in enumerate(roots):
+        origin = tuple(axis * sizes[0] for axis in root)
+        next_index = _write_tree(nodes, index, next_index, 0, trees[root], origin, sizes,
+                                 lambda row, _origin, _size: row)
+    entity = replace(data.entities[0], first_sector=0, end_sector=len(roots))
+    return replace(data, entities=[entity], sectors=np.asarray(roots, dtype=np.int32), brick_ids=None,
+                   hierarchy=BrickHierarchy(sizes, nodes, origins))
 
 
 def load_vxb_volume(path, density):

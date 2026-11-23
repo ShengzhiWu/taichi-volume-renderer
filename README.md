@@ -133,7 +133,7 @@ window = DisplayWindow.from_file("path/to/world.vxb")
 window.show()
 ```
 
-The VXB importer adapts the file's hierarchy to the renderer's sector and brick layout. Uniform bricks that span whole sectors stay compact. The renderer caches one light value at the center of each uniform brick and caches light per voxel in mixed bricks. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
+The VXB renderer follows the brick hierarchy declared in the file. Uniform bricks retain their original size. The renderer caches one light value at the center of each uniform brick and caches light per voxel in mixed bricks. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
 
 | Sparse storage mode | Behavior |
 | --- | --- |
@@ -209,7 +209,7 @@ scene = SparseSmokeScene(data, materials=materials, index_of_refraction=ior,
 
 In Python, pass `caustics=False`, `caustic_photon_density=N`, or `refractive_shadow_passthrough="auto"` to `DisplayWindow.from_file()` for the corresponding controls. The shadow passthrough also accepts a number. For a manual bake, set the density with `photon_density`.
 
-The baker requires one indexed entity with refractive indices. Receivers must use ordinary bricks. The loader targets 512 material clusters. Baking raises an error if the material indices run out.
+The baker requires one indexed entity with refractive indices. Receivers must use 8³ bricks. The loader targets 512 material clusters. Baking raises an error if the material indices run out.
 
 ### Off-Screen Rendering
 

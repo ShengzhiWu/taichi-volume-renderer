@@ -37,7 +37,7 @@ The current sparse renderer accepts the basic volume fields in either mode. Inde
 | `normal_x`, `normal_y`, `normal_z` | World-space interface normal. A zero vector uses the renderer's estimate. |
 | `emission_r`, `emission_g`, `emission_b` | Linear outgoing radiance added after ordinary lighting. This can carry baked caustics. |
 
-These rendering fields use `f32`. The current importer accepts up to 65536 indexed material rows and adapts the file hierarchy to the renderer's 128/8 storage. Uniform bricks with an edge length of at least 128 voxels stay compact. Smaller uniform bricks expand into the regular brick pool and share one cached light value per original brick. The renderer computes the value at the uniform brick's center.
+These rendering fields use `f32`. The importer accepts up to 65536 indexed material rows and preserves the file's brick levels and leaf sizes. The renderer computes one cached light value at the center of each uniform leaf and caches light per voxel in mixed leaves.
 
 ## Convert an existing CXW scene
 

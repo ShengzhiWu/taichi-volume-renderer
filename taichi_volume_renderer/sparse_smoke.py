@@ -235,10 +235,16 @@ class SparseSmokeScene(_OrbitScene):
         self.brick_count = len(data.blocks)
         self._regular_brick_count = self.brick_count - len(data.uniform_bricks)
         self._has_uniform_bricks = bool(data.uniform_bricks)
+        self._native_hierarchy = data.hierarchy is not None
+        self._root_shift = data.hierarchy.sizes[0].bit_length() - 1 if self._native_hierarchy else 7
         if self.sector_count:
             self._sectors = upload(np.asarray(data.sectors, dtype=np.int32), 3)
+        if self._native_hierarchy:
+            self._hierarchy_nodes = upload(data.hierarchy.nodes, 3)
+            self._hierarchy_shifts = upload(np.asarray([size.bit_length() - 1 for size in data.hierarchy.sizes]))
+        elif self.sector_count:
             self._brick_ids = upload(np.asarray(data.brick_ids, dtype=np.int32))
-        if self._has_uniform_bricks:
+        if self._has_uniform_bricks and not self._native_hierarchy:
             if self.entity_count != 1:
                 raise ValueError("Large uniform bricks require a single sparse entity")
             uniform = np.asarray(data.uniform_bricks, dtype=np.int32)
@@ -249,8 +255,9 @@ class SparseSmokeScene(_OrbitScene):
             self._uniform_rows = upload(uniform[:, 4])
         self._positions = upload(np.array([entity.position for entity in data.entities], dtype=np.float32), 3)
         self._rotations = upload(np.array([entity.rotation for entity in data.entities], dtype=np.float32), (3, 3))
-        self._lower = upload(np.array([entity.lower // 128 for entity in data.entities]), 3)
-        self._upper = upload(np.array([(entity.upper + 127) // 128 for entity in data.entities]), 3)
+        root_width = 1 << self._root_shift
+        self._lower = upload(np.array([entity.lower // root_width for entity in data.entities]), 3)
+        self._upper = upload(np.array([(entity.upper - 1) // root_width + 1 for entity in data.entities]), 3)
         self._ranges = upload(np.array([
             [entity.first_sector, entity.end_sector] for entity in data.entities
         ]), 2)
@@ -353,45 +360,38 @@ class SparseSmokeScene(_OrbitScene):
         # Store exactly the same light value once when all sources are achromatic.
         self._light_channels = light_cache_channels(intensities)
         locations = np.full((self._regular_brick_count, 4), -1, dtype=np.int32)
-        for entity_id, entity in enumerate(data.entities):
-            rows = slice(entity.first_sector, entity.end_sector)
-            sector_ids, absolute_bricks = np.nonzero(data.brick_ids[rows] >= 0)
-            brick_ids = data.brick_ids[rows][sector_ids, absolute_bricks]
-            local = np.stack(
-                (absolute_bricks & 15, (absolute_bricks >> 4) & 15, absolute_bricks >> 8), axis=1
-            )
-            locations[brick_ids, :3] = data.sectors[rows][sector_ids] * 128 + local * 8
-            locations[brick_ids, 3] = entity_id
-
-        regular = data.blocks[:self._regular_brick_count]
-        uniform = locations[:, 3] >= 0
-        axes = tuple(range(1, regular.ndim))
-        for start in range(0, len(regular), 8192):
-            bricks = regular[start:start + 8192]
-            uniform[start:start + len(bricks)] &= np.all(bricks == bricks[:, :1], axis=axes)
+        uniform = np.zeros(self._regular_brick_count, dtype=bool)
+        if self._native_hierarchy:
+            locations[:, :3] = data.hierarchy.mixed_origins
+            locations[:, 3] = 0
+        else:
+            for entity_id, entity in enumerate(data.entities):
+                rows = slice(entity.first_sector, entity.end_sector)
+                sector_ids, absolute_bricks = np.nonzero(data.brick_ids[rows] >= 0)
+                brick_ids = data.brick_ids[rows][sector_ids, absolute_bricks]
+                local = np.column_stack((absolute_bricks & 15, (absolute_bricks >> 4) & 15, absolute_bricks >> 8))
+                locations[brick_ids, :3] = data.sectors[rows][sector_ids] * 128 + local * 8
+                locations[brick_ids, 3] = entity_id
+            regular = data.blocks[:self._regular_brick_count]
+            axes = tuple(range(1, regular.ndim))
+            for start in range(0, len(regular), 8192):
+                bricks = regular[start:start + 8192]
+                uniform[start:start + len(bricks)] = np.all(bricks == bricks[:, :1], axis=axes)
+            uniform &= locations[:, 3] >= 0
 
         # A nonnegative row addresses the per-voxel cache. A negative row
-        # addresses the per-brick cache, including VXB bricks split on import.
+        # addresses the per-brick cache.
         light_rows = np.zeros(self.brick_count, dtype=np.int32)
-        group_centers = []
-        for first, size in data.uniform_light_groups:
-            end = first + (size // 8)**3
-            if uniform[first:end].all() and np.all(regular[first:end, 0] == regular[first, 0]):
-                light_rows[first:end] = -(len(group_centers) + 1)
-                group_centers.append(np.r_[locations[first, :3] + size * .5, locations[first, 3]])
-
-        shared = np.flatnonzero(uniform & (light_rows[:len(regular)] == 0))
-        light_rows[shared] = -(len(group_centers) + 1 + np.arange(len(shared), dtype=np.int32))
-        uniform_centers = [np.asarray(group_centers, dtype=np.float64).reshape(-1, 4),
-                           locations[shared].astype(np.float64)]
-        uniform_centers[1][:, :3] += 4.
+        shared = np.flatnonzero(uniform)
+        light_rows[shared] = -(1 + np.arange(len(shared), dtype=np.int32))
+        centers = locations[shared].astype(np.float64)
+        centers[:, :3] += 4.
         if self._has_uniform_bricks:
             bricks = np.asarray(data.uniform_bricks, dtype=np.int32)
-            width = np.exp2(bricks[:, :1].astype(np.float32))
-            large_centers = (bricks[:, 1:4].astype(np.float32) + .5) * width
-            light_rows[bricks[:, 4]] = -(len(group_centers) + len(shared) + 1 + np.arange(len(bricks), dtype=np.int32))
-            uniform_centers.append(np.column_stack((large_centers, np.zeros(len(bricks), dtype=np.float32))))
-        centers = np.concatenate(uniform_centers)
+            width = np.exp2(bricks[:, :1].astype(np.float64))
+            native_centers = (bricks[:, 1:4] + .5) * width
+            light_rows[bricks[:, 4]] = -(len(shared) + 1 + np.arange(len(bricks), dtype=np.int32))
+            centers = np.concatenate((centers, np.column_stack((native_centers, np.zeros(len(bricks))))))
         self._uniform_light_count = len(centers)
         if self._uniform_light_count:
             entity_ids = centers[:, 3].astype(np.intp)
@@ -504,6 +504,42 @@ class SparseSmokeScene(_OrbitScene):
         return found
 
     @ti.func
+    def _native_brick(self, root, voxel):
+        node = root
+        brick, index, shift = -1, 0, ti.static(self._root_shift)
+        for level in range(self._hierarchy_shifts.shape[0]):
+            entry = self._hierarchy_nodes[node]
+            if entry.y < 0:
+                brick = ~entry.y
+                if shift == 3:
+                    local = voxel & 7
+                    index = local.x + 8 * local.y + 64 * local.z
+                break
+            child_shift = self._hierarchy_shifts[level + 1]
+            ratio = 1 << (shift - child_shift)
+            shift = child_shift
+            local = (voxel >> shift) & (ratio - 1)
+            slot = local.x + ratio * (local.y + ratio * local.z)
+            node = -1
+            if entry.z == ratio * ratio * ratio:
+                node = entry.y + slot
+            else:
+                lo, hi = entry.y, entry.y + entry.z
+                while lo < hi:
+                    mid = lo + (hi - lo) // 2
+                    other = self._hierarchy_nodes[mid].x
+                    if slot == other:
+                        node = mid
+                        break
+                    if other < slot:
+                        lo = mid + 1
+                    else:
+                        hi = mid
+            if node < 0:
+                break
+        return brick, index, shift
+
+    @ti.func
     def _lookup(self, origin, direction, t, end, entity, exact_voxel: ti.template() = False):
         rotation = self._rotations[entity]
         position = self._positions[entity]
@@ -511,12 +547,13 @@ class SparseSmokeScene(_OrbitScene):
         local_origin = rotation.transpose() @ (origin - position)
         p = local_origin + local_direction * t
         lower, upper = self._lower[entity], self._upper[entity]
-        voxel_lower = lower * 128
+        root_width = ti.static(1 << self._root_shift)
+        voxel_lower = lower * root_width
         relative = p - voxel_lower
         if ti.static(self._interface or exact_voxel):
             relative = ti.floor(relative)
         voxel = voxel_lower + ti.cast(relative, ti.i32)
-        sector_cell = voxel >> 7
+        sector_cell = voxel >> ti.static(self._root_shift)
         next_sample = t
         brick, index = -1, 0
         if (sector_cell >= lower).all() and (sector_cell < upper).all():
@@ -524,16 +561,21 @@ class SparseSmokeScene(_OrbitScene):
             if ti.static(self.sector_count):
                 sector = self._find_coord(self._sectors, sector_cell, self._ranges[entity])
                 if sector >= 0:
-                    brick_cell = voxel >> 3
-                    local_brick = brick_cell - sector_cell * 16
-                    brick = self._brick_ids[sector, local_brick.x + 16 * local_brick.y + 256 * local_brick.z]
-                    if brick < 0:
-                        next_sample += _distance_to_cell_exit(p, local_direction, brick_cell, 8)
+                    if ti.static(self._native_hierarchy):
+                        brick, index, shift = self._native_brick(sector, voxel)
+                        if brick < 0:
+                            next_sample += _distance_to_cell_exit(p, local_direction, voxel >> shift, 1 << shift)
                     else:
-                        local_voxel = voxel - brick_cell * 8
-                        index = local_voxel.x + 8 * local_voxel.y + 64 * local_voxel.z
+                        brick_cell = voxel >> 3
+                        local_brick = brick_cell - sector_cell * 16
+                        brick = self._brick_ids[sector, local_brick.x + 16 * local_brick.y + 256 * local_brick.z]
+                        if brick < 0:
+                            next_sample += _distance_to_cell_exit(p, local_direction, brick_cell, 8)
+                        else:
+                            local_voxel = voxel - brick_cell * 8
+                            index = local_voxel.x + 8 * local_voxel.y + 64 * local_voxel.z
             if sector < 0:
-                if ti.static(self._has_uniform_bricks):
+                if ti.static(self._has_uniform_bricks and not self._native_hierarchy):
                     for level in range(self._uniform_ranges.shape[0]):
                         level_range = self._uniform_ranges[level]
                         coord = voxel >> level_range[0]
@@ -542,10 +584,10 @@ class SparseSmokeScene(_OrbitScene):
                             brick = self._uniform_rows[found]
                             break
                 if brick < 0:
-                    next_sample += _distance_to_cell_exit(p, local_direction, sector_cell, 128)
+                    next_sample += _distance_to_cell_exit(p, local_direction, sector_cell, root_width)
         else:
             box_lower = voxel_lower - ti.static(0.0 if self._interface else 1.0)
-            entry, exit = intersect_box(local_origin, local_direction, box_lower, upper * 128.0, t, end)
+            entry, exit = intersect_box(local_origin, local_direction, box_lower, upper * (1.0 * root_width), t, end)
             next_sample = end
             if entry < exit:
                 next_sample = entry

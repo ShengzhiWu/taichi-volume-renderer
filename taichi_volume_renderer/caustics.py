@@ -149,7 +149,7 @@ def bake_caustics(data, materials, index_of_refraction, directional_light, *,
 
     Initialize Taichi first. The scene must have one indexed entity. Each photon
     deposits at its first non-refractive occupied voxel after refraction.
-    Compact uniform bricks can refract light but cannot receive this bake.
+    Uniform bricks larger than 8³ can refract light but cannot receive this bake.
     The photon count is derived from the projected area and photon_density,
     which defaults to six photons per square voxel.
     Set material_clusters to cluster baked RGB reflectance and emission.
@@ -181,8 +181,10 @@ def bake_caustics(data, materials, index_of_refraction, directional_light, *,
     hits, weights, area = _gather_hits(
         data, materials, ior, normals, -toward_light, photon_density, float(step_length), seed,
     )
-    if np.any(hits[:, 0] >= len(data.blocks) - len(data.uniform_bricks)):
-        raise ValueError("Caustic receivers must use ordinary sparse bricks")
+    unavailable = [row for shift, _x, _y, _z, row in data.uniform_bricks
+                   if data.hierarchy is None or shift > 3]
+    if unavailable and np.isin(hits[:, 0], unavailable).any():
+        raise ValueError("Caustic receivers must use 8³ bricks. Automatic uniform brick splitting is disabled.")
 
     voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
     bricks, slots = np.divmod(voxels, 512)

@@ -60,6 +60,20 @@ def _thicken_ground(data, depth):
     depth = int(depth)
     if depth >= 2**32:
         raise ValueError("Ground thickness extends outside signed voxel coordinates")
+    if data.hierarchy is not None:
+        from .vxb_scene import restore_edited_hierarchy
+
+        # The ground editor works by 8³ columns. Build its temporary index
+        # only for mixed leaves and keep all native uniform leaves intact.
+        coordinates = data.hierarchy.mixed_origins // 8
+        sectors, inverse = np.unique(coordinates // 16, axis=0, return_inverse=True)
+        local = coordinates % 16
+        slots = local[:, 0] + 16 * (local[:, 1] + 16 * local[:, 2])
+        tables = np.full((len(sectors), 4096), -1, dtype=np.int32)
+        tables[inverse, slots] = np.arange(len(coordinates), dtype=np.int32)
+        entity = replace(data.entities[0], first_sector=0, end_sector=len(sectors))
+        edit_data = replace(data, entities=[entity], sectors=sectors, brick_ids=tables, hierarchy=None)
+        return restore_edited_hierarchy(_thicken_ground(edit_data, depth), data.hierarchy.sizes)
 
     regular_count = len(data.blocks) - len(data.uniform_bricks)
     additions = []
@@ -141,7 +155,7 @@ def _thicken_ground(data, depth):
     uniform = tuple((*brick[:-1], brick[-1] + len(additions)) for brick in data.uniform_bricks)
     brick_ids = np.stack(tables) if tables else data.brick_ids
     return SparseVolumeData(entities, np.asarray(sectors, dtype=np.int32).reshape(-1, 3),
-                            brick_ids, blocks, data.player_pose, uniform, data.uniform_light_groups)
+                            brick_ids, blocks, data.player_pose, uniform)
 
 
 def _world_centers(entity, tile, columns, z, axes, rotation):

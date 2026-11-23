@@ -49,24 +49,27 @@ def parse_args(argv=None):
 
 
 def center_ground(data, palette, x, y):
-    sector_x, local_x = divmod(x, 128)
-    sector_y, local_y = divmod(y, 128)
-    brick_x, voxel_x = divmod(local_x, 8)
-    brick_y, voxel_y = divmod(local_y, 8)
-    levels = []
-    for coord, table in zip(data.sectors, data.brick_ids):
-        if (coord[0], coord[1]) != (sector_x, sector_y):
-            continue
-        for brick_z in range(16):
-            brick = table[brick_x + 16 * (brick_y + 16 * brick_z)]
-            if brick >= 0:
-                codes = data.blocks[brick].reshape(8, 8, 8)[:, voxel_y, voxel_x]
-                levels.extend(coord[2] * 128 + brick_z * 8 + np.flatnonzero(palette[codes, 3] > 0))
-    occupied = np.sort(levels)
-    if not occupied.size:
+    intervals = []
+    origins = data.hierarchy.mixed_origins
+    column = np.array([x, y])
+    rows = np.flatnonzero(((column >= origins[:, :2]) & (column < origins[:, :2] + 8)).all(axis=1))
+    for row in rows:
+        ox, oy, oz = origins[row]
+        codes = data.blocks[row].reshape(8, 8, 8)[:, y - oy, x - ox]
+        intervals.extend((oz + z, oz + z + 1) for z in np.flatnonzero(palette[codes, 3] > 0))
+    for level, bx, by, bz, row in data.uniform_bricks:
+        width = 1 << level
+        if x // width == bx and y // width == by and palette[data.blocks[row, 0], 3] > 0:
+            intervals.append((bz * width, (bz + 1) * width))
+    if not intervals:
         raise ValueError("No occupied voxels under the scene center")
-    layers = np.split(occupied, np.flatnonzero(np.diff(occupied) > 1) + 1)
-    return float(max(layers, key=len)[-1] + 1)
+    layers = []
+    for low, high in sorted(intervals):
+        if layers and low <= layers[-1][1]:
+            layers[-1] = (layers[-1][0], max(layers[-1][1], high))
+        else:
+            layers.append((low, high))
+    return float(max(layers, key=lambda interval: interval[1] - interval[0])[1])
 
 
 def numbered_directory(root):
