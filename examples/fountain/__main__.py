@@ -281,21 +281,15 @@ def make_sector(coord):
     if sy == -1:
         edge = np.maximum(abs(x), abs(z))
         variation = .75*(value_noise(x+183, z-711, 39)-.5) + .43*(value_noise(x, z, 15)-.5)
-        # A single level of paving avoids the old one-voxel steps and their dark line shadows.
+        row = np.floor(z/79.)
+        staggered_x = x + 53.*(row % 2)
+        col = np.floor(staggered_x/106.)
+        # Leave one empty voxel between pavers through the full paving depth.
+        paver = (staggered_x % 106. < 105.) & (z % 79. < 78.)
         ground = (edge < GROUND_EDGE) & (y >= -14) & (y < -2)
-        stone(ground, 4.2+variation, 0., lift=0.)
-        field_x = x+17.*(value_noise(x+401,z,121)-.5)
-        field_z = z+13.*(value_noise(x,z-251,110)-.5)
-        row = np.floor(field_z/79.)
-        shift = 106.*hash01(row, 217)
-        col = np.floor((field_x+shift)/106.)
-        u, v = (field_x+shift) % 106., field_z % 79.
-        seam = np.minimum(np.minimum(u,106.-u),np.minimum(v,79.-v))
-        # Keep narrow mortar joints in the stone colors on the same plane.
-        grout = np.clip((2.35-seam)/1.15, 0., 1.)
         damp = np.exp(-((r-433)/36.)**2) * (.46+.54*value_noise(x-71,z+36,69))
-        natural = 4.28+.8*(hash01(col,row)-.5)+variation-1.14*grout-.72*damp
-        stone((edge < GROUND_EDGE-2) & (y >= -5) & (y < -2), natural, 0., lift=0.)
+        natural = 4.28+.8*(hash01(col,row)-.5)+variation-.72*damp
+        stone(ground & paver, natural, 0., lift=0.)
         stone((r < 432 + 1.3*y) & (y >= -3), 4.6)
         return section, liquid
 
@@ -305,7 +299,8 @@ def make_sector(coord):
         # The entire outer stone assembly uses its original profile at 1.5x height.
         b = y / 1.5
         stone((r > 411) & (r < 439 - .050*(b-7)**2) & (b < 15), 5.4 + b*.12)
-        relief = relief_at(wrapped(theta-FRONT)*432, y)
+        # Stretch from the foot of the relief so the crown rises above the rim.
+        relief = relief_at(wrapped(theta-FRONT)*432, 18. + (y-18.)/1.32)
         wall_profile = 432 - 1.8*np.sin(np.clip((b-14)/36, 0, 1)*np.pi)
         wall = (r >= 397) & (r < wall_profile) & (b >= 14) & (b < 51)
         recess = np.clip(1.20-.088*relief, .08, 1) * (1+.32*np.exp(-((b-25)/11)**2))
@@ -319,7 +314,7 @@ def make_sector(coord):
         stone((r >= 430) & (r < 435) & (abs(b-18) < 1.6) & (np.cos(theta*172) > .45), 8.5)
 
         # Apply the acanthus over the front of the mouldings, like the reference.
-        carrier = wall_profile + 2.3*np.clip((b-49.)/5.,0,1)
+        carrier = wall_profile + 2.3*np.clip((b-49.)/5.,0,1) - 4.*np.clip((b-58.)/4.,0,1)
         carve = (r >= carrier-2.2) & (r < carrier+relief) & (relief > .64)
         stone(carve, 5.05+.254*np.minimum(relief,22)+.39*sediment, .52)
 
