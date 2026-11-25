@@ -76,8 +76,8 @@ def generate(path, *, merge_hidden=True):
             pool |= (ly >= top - 22.) & (ly < top + .1) & (radius_sq < (tier[3] + 10.)**2)
         values[(water & ~pool).ravel()] = airborne
 
-    pools = ((BASIN_LEVEL, 397., 1.), (LOWER[1] - 1.8, LOWER[3] + 10., .74),
-             (UPPER[1] - 1.8, UPPER[3] + 10., .74))
+    pools = ((BASIN_LEVEL, 397.), (LOWER[1] - 1.8, LOWER[3] + 10.),
+             (UPPER[1] - 1.8, UPPER[3] + 10.))
     empty = np.zeros((8, 8, 8), dtype=np.uint16)
     unit = 512
     water = materials[int(index_for_code[3])][:5]
@@ -92,7 +92,7 @@ def generate(path, *, merge_hidden=True):
 
     def assign_surface_normals(values, grid, x, y, z):
         y0 = y * 8
-        if not any(y0 < level + 4.5 and y0 + 8 > level - 4.5 for level, _, _ in pools):
+        if not any(y0 < level + 4.5 and y0 + 8 > level - 4.5 for level, _ in pools):
             return
         exposed = grid == WATER_CODE
         if not exposed.any():
@@ -103,14 +103,14 @@ def generate(path, *, merge_hidden=True):
         exposed[:, 0, :] &= adjacent_brick(x, y - 1, z)[:, -1, :] == WATER_CODE
         lz, ly, lx = np.nonzero(exposed)
         wx, wy, wz = x * 8 + lx + .5, y0 + ly + .5, z * 8 + lz + .5
-        for level, radius, amplitude in pools:
+        for level, radius in pools:
             selected = (np.abs(wy - level) < 4.5) & (wx**2 + wz**2 < radius**2)
             if not selected.any():
                 continue
             px, pz = wx[selected], wz[selected]
             h = .01
-            dx = (water_wave(px + h, pz) - water_wave(px - h, pz)) * (amplitude / (2 * h))
-            dz = (water_wave(px, pz + h) - water_wave(px, pz - h)) * (amplitude / (2 * h))
+            dx = (water_wave(px + h, pz) - water_wave(px - h, pz)) * (.5 / h)
+            dz = (water_wave(px, pz + h) - water_wave(px, pz - h)) * (.5 / h)
             slopes = np.rint(np.column_stack((-dx, -dz)) * unit).astype(int)
             ids = []
             for a, b in slopes.tolist():
@@ -389,7 +389,7 @@ def make_sector(coord):
         rolled = ((r-crest+1.5)/(8.8-1.8*trough))**2 + ((y-lip+2.4)/6.4)**2 < 1
         stone(rolled & ~channel, 7.85 + 1.15*petals - 1.85*trough)
         ripples = water_wave(x, z)
-        level = top-1.8 + .74*ripples
+        level = top-1.8 + ripples
         drain = channel & (r < crest+DRAIN_OFFSET+1.85) & (y < top-2.0)
         fill_water((hollow & (y < level)) | drain)
 
