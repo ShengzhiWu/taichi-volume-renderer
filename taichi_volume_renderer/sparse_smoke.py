@@ -691,10 +691,15 @@ class SparseSmokeScene(_OrbitScene):
         if shadow_weight == 0.:
             transmittance = 0.
         while t <= end and transmittance != 0.0:
+            sample_t = t
+            if t != 0.:
+                sample_t += .5 * self._light_step
+            if sample_t > end:
+                break
             density, next_sample = 0.0, 1e30
             for entity in range(self.entity_count):
                 next_entity_sample, brick, voxel, _ = self._lookup(
-                    origin, direction, t, 1e30, entity, forward_voxel=True,
+                    origin, direction, sample_t, 1e30, entity, forward_voxel=True,
                 )
                 next_sample = ti.min(next_sample, next_entity_sample)
                 if brick >= 0:
@@ -707,7 +712,7 @@ class SparseSmokeScene(_OrbitScene):
                 step = 0.5
                 next_t = step
             else:
-                next_t += ti.min(self._advance(t, next_sample, step), 2**24) * step
+                next_t += ti.min(self._advance(sample_t, next_sample, step), 2**24) * step
             transmittance *= 1.0 - density * step
             if next_t <= t:
                 break

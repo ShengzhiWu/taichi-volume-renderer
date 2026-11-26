@@ -17,12 +17,12 @@ from taichi_volume_renderer.vxb_scene import load_vxb_volume
 
 
 class SparseSmokeTest(unittest.TestCase):
-    def test_shadow_starts_with_half_voxel_before_configured_step(self):
+    def test_shadow_samples_full_steps_at_their_midpoints(self):
         ti.init(arch=ti.cpu)
         self.addCleanup(ti.reset)
         fields = (MaterialField("density", "f32"),)
         voxels = [0] * 512
-        for index in (1, 2, 3, 10):
+        for index in (0, 2, 4, 10):
             voxels[index] = 1
         world = VxbScene(fields, ((0.,), (.1,)), (8,), {(0, 0, 0): tuple(voxels)})
         with TemporaryDirectory() as folder:

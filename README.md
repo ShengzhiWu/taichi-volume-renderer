@@ -89,7 +89,7 @@ python -m examples.fountain "path/to/fountain.vxb"
 Open the VXB with the sparse viewer using the reference camera, lighting, and display settings.
 
 ```bash
-python -m examples.sparse_smoke "path/to/fountain.vxb" --arch cuda --camera saved --resolution 1024 607 --fixed-resolution --vertical-fov 37 --step 0.52 --light-step 1.4 --light-direction -0.71 -0.53 0.45 --light-rgb 7.36 6.64 5.68 --ambient-light 0.60 0.65 0.73 --highlight-shoulder 0.76 --refractive-shadow-passthrough 0.5
+python -m examples.sparse_smoke "path/to/fountain.vxb" --arch cuda --camera saved --resolution 1024 607 --fixed-resolution --vertical-fov 37 --step 0.52 --light-step 1.4 --light-direction -0.71 -0.53 0.45 --light-rgb 14.72 13.28 11.36 --ambient-light 0.60 0.65 0.73 --highlight-shoulder 0.76 --refractive-shadow-passthrough 0.5
 ```
 
 #### CXW
