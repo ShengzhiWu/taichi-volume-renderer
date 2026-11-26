@@ -8,6 +8,7 @@ import numpy as np
 import taichi as ti
 
 from taichi_volume_renderer import DisplayWindow
+from taichi_volume_renderer.caustics import _runtime_caustics
 from taichi_volume_renderer._ground import _thicken_ground
 from taichi_volume_renderer.sparse_data import Entity, SparseVolumeData, index_brick_values
 from taichi_volume_renderer.sparse_smoke import SparseSmokeScene
@@ -67,19 +68,53 @@ class SparseSmokeTest(unittest.TestCase):
 
         @ti.kernel
         def sample():
-            output[0, 0] = scene._voxel_light(2, 0)
+            output[0, 0] = scene._voxel_radiance(2, 0)
             output[0, 1] = scene._sample_light(ti.Vector([16., 16., 16.]))
-            output[1, 0] = scene._voxel_light(2, 511)
+            output[1, 0] = scene._voxel_radiance(2, 511)
             output[1, 1] = output[0, 1]
-            output[2, 0] = scene._voxel_light(3, 511)
+            output[2, 0] = scene._voxel_radiance(3, 511)
             output[2, 1] = scene._sample_light(ti.Vector([36., 4., 4.]))
-            output[3, 0] = scene._voxel_light(1, 0)
+            output[3, 0] = scene._voxel_radiance(1, 0)
             output[3, 1] = scene._sample_light(ti.Vector([-64., 64., 64.]))
 
         sample()
         values = output.to_numpy()
         np.testing.assert_allclose(values[:, 0], values[:, 1])
         self.assertFalse(np.allclose(values[0, 0], values[3, 0]))
+
+    def test_caustics_add_to_outgoing_radiance_without_accumulating(self):
+        ti.init(arch=ti.cpu)
+        self.addCleanup(ti.reset)
+        fields = tuple(MaterialField(name, "f32") for name in ("r", "g", "b", "density"))
+        world = VxbScene(fields, ((0., 0., 0., 0.), (.5, .25, 1., .1)),
+                         (32, 8), {(0, 0, 0): 1})
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "world.vxb"
+            save_vxb(path, world)
+            data, materials, _, _, _ = load_vxb_volume(path, density=.22)
+        emission = np.zeros((65536, 3), dtype=np.float32)
+        emission[1] = (.1, .2, .3)
+        intensity = (2., 3., 4.)
+        sun = ((0, 0, 1), intensity)
+        with patch("taichi_volume_renderer.caustics._gather_hits",
+                   return_value=(np.array([[0, 12], [0, 13]]), np.array([1., 3.]), np.pi)):
+            receivers = _runtime_caustics(data, materials, np.ones(65536), None, sun, 6)
+        np.testing.assert_array_equal(receivers[0], [0])
+        np.testing.assert_array_equal(receivers[1], [0])
+        np.testing.assert_allclose(receivers[2], [4. / 32**3])
+        scene = SparseSmokeScene(
+            data, materials=materials, emission=emission, directional_light=sun,
+            _caustic_receivers=receivers,
+        )
+        scene.update_light()
+        first = scene._uniform_light_cache.to_numpy()
+        scene.update_light()
+        np.testing.assert_array_equal(scene._uniform_light_cache.to_numpy(), first)
+        self.assertEqual(scene._mixed_light_count, 0)
+        scene._caustic_receivers = None
+        scene.update_light()
+        np.testing.assert_allclose(first[0] - scene._uniform_light_cache.to_numpy()[0],
+                                   receivers[2][0] * np.asarray(intensity) * materials[1, :3], atol=1e-7)
 
     def test_native_lookup_uses_file_levels_for_leaves_and_gaps(self):
         ti.init(arch=ti.cpu)

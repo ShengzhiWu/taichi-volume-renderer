@@ -133,7 +133,7 @@ window = DisplayWindow.from_file("path/to/world.vxb")
 window.show()
 ```
 
-The VXB renderer follows the brick hierarchy declared in the file. Uniform bricks retain their original size. The renderer caches one light value at the center of each uniform brick and caches light per voxel in mixed bricks. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
+The VXB renderer follows the brick hierarchy declared in the file. Uniform bricks retain their original size. Mixed bricks cache outgoing radiance per voxel. Uniform bricks share one cached value, with direct lighting sampled at the center and caustic energy averaged over the brick. Straight rays and gradient refraction preserve the sample positions during a jump. Interface refraction resumes sampling just beyond the empty cell boundary on a jump longer than one regular step.
 
 | Sparse storage mode | Behavior |
 | --- | --- |
@@ -169,7 +169,7 @@ See `examples/canvas.py`.
 
 The Python API defaults to point lighting. To use a directional light, pass the direction toward the source and its RGB intensity. For example, `directional_light=((0, 0, 1), (8, 8, 8))` gives white light from above. Set `ambient_light=(R, G, B)` to add unshadowed light. Its default is `(0, 0, 0)`.
 
-Lighting is cached at voxel centers in mixed bricks and at brick centers in uniform bricks. When the directional and ambient lights each have equal RGB components, the cache uses one channel. Light rays advance three voxel widths per step by default.
+Lighting is sampled at voxel centers in mixed bricks and at brick centers in uniform bricks. The sparse renderer caches outgoing radiance after applying material color and adding emission. Its cache can use one channel for grayscale materials under white light without emission or caustics. Light rays advance three voxel widths per step by default.
 
 The sparse CLI viewer defaults to an overhead directional light with RGB intensity `(8, 8, 8)`. Use `--light-type point` for point lighting, `--no-lighting` for uniform illumination, or `--ambient-light R G B` to set the ambient light.
 
@@ -190,7 +190,7 @@ Loading a VXB bakes caustics by default when directional lighting is active and 
 - `--caustic-photon-density N` sets the number of photons per square voxel of projected area. The default is `6`.
 - `--refractive-shadow-passthrough auto|N` controls directional shadows when refraction is enabled. At `0`, refractive voxels block direct light. At `1`, they cast ordinary volume shadows. Values between `0` and `1` blend the two shadow results. The default, `auto`, uses `0` if caustics were baked at load time and `1` otherwise. An explicit number overrides `auto`.
 
-After initializing Taichi, use `from taichi_volume_renderer import caustics` to bake directional-light caustics into a loaded indexed scene. The bake multiplies the deposited light by the receiving material's RGB reflectance and adds it to its emission. The returned scene data and tables can be passed to `SparseSmokeScene`.
+For load-time baking, the viewer adds the deposited light to the outgoing radiance cache after applying the receiving material's RGB reflectance. To bake into material emission instead, initialize Taichi and call `caustics.bake_caustics()`. The returned scene data and tables can be passed to `SparseSmokeScene`.
 
 ```python
 from taichi_volume_renderer import caustics
@@ -209,7 +209,7 @@ scene = SparseSmokeScene(data, materials=materials, index_of_refraction=ior,
 
 In Python, pass `caustics=False`, `caustic_photon_density=N`, or `refractive_shadow_passthrough="auto"` to `DisplayWindow.from_file()` for the corresponding controls. The shadow passthrough also accepts a number. For a manual bake, set the density with `photon_density`.
 
-The baker requires one indexed entity with refractive indices. Receivers must use 8³ bricks. The loader targets 512 material clusters. Baking raises an error if the material indices run out.
+The baker requires one indexed entity with refractive indices. When baking into material emission, receivers must use 8³ bricks and baking raises an error if the material indices run out.
 
 ### Off-Screen Rendering
 

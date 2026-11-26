@@ -142,6 +142,50 @@ def _gather_hits(data, materials, ior, normals, direction, photon_density, step,
     return hits[valid], weights[valid], area / count
 
 
+def _receiver_power(data, materials, ior, normals, toward_light, photon_density, step, seed,
+                    *, share_uniform=False):
+    hits, weights, area = _gather_hits(
+        data, materials, ior, normals, -toward_light, photon_density, step, seed,
+    )
+    if share_uniform:
+        volumes = np.ones(len(data.blocks), dtype=np.float64)
+        for shift, _x, _y, _z, row in data.uniform_bricks:
+            volumes[row] = 2. ** (3 * shift)
+        hits[volumes[hits[:, 0]] > 1, 1] = 0
+    else:
+        unavailable = [row for shift, _x, _y, _z, row in data.uniform_bricks
+                       if data.hierarchy is None or shift > 3]
+        if unavailable and np.isin(hits[:, 0], unavailable).any():
+            raise ValueError("Caustic receivers must use 8³ bricks. Automatic uniform brick splitting is disabled.")
+    voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
+    bricks, slots = np.divmod(voxels, 512)
+    power = np.bincount(grouping, weights=weights) * (area / np.pi)
+    if share_uniform:
+        power /= volumes[bricks]
+    return bricks, slots, power
+
+
+def _runtime_caustics(data, materials, ior, normals, light, photon_density):
+    if not math.isfinite(photon_density) or photon_density <= 0:
+        raise ValueError("photon_density must be finite and positive")
+    ior = _material_table(ior, (65536,))
+    if np.any(ior <= 0):
+        raise ValueError("Caustic baking requires positive refractive indices")
+    normals = _normalized_normals(normals)
+    toward_light, _ = directional_light_parameters(light)
+    return _receiver_power(
+        data, materials, ior, normals, toward_light, photon_density, .5, 0, share_uniform=True,
+    )
+
+
+def _normalized_normals(normals):
+    if normals is None:
+        return None
+    normals = _material_table(normals, (65536, 3), nonnegative=False)
+    lengths = np.linalg.norm(normals.astype(np.float64), axis=1)
+    return (normals / np.where(lengths > 0, lengths, 1.)[:, None]).astype(np.float32)
+
+
 def bake_caustics(data, materials, index_of_refraction, directional_light, *,
                   interface_normals=None, emission=None, photon_density=DEFAULT_PHOTON_DENSITY,
                   step_length=0.5, seed=0, material_clusters=None):
@@ -171,25 +215,13 @@ def bake_caustics(data, materials, index_of_refraction, directional_light, *,
     ior = _material_table(index_of_refraction, (65536,))
     if np.any(ior <= 0):
         raise ValueError("Caustic baking requires positive refractive indices")
-    normals = None
-    if interface_normals is not None:
-        normals = _material_table(interface_normals, (65536, 3), nonnegative=False)
-        lengths = np.linalg.norm(normals.astype(np.float64), axis=1)
-        normals = (normals / np.where(lengths > 0, lengths, 1.)[:, None]).astype(np.float32)
+    normals = _normalized_normals(interface_normals)
     emission = (np.zeros((65536, 3), dtype=np.float32) if emission is None
                 else _material_table(emission, (65536, 3)))
-    hits, weights, area = _gather_hits(
-        data, materials, ior, normals, -toward_light, photon_density, float(step_length), seed,
+    bricks, slots, power = _receiver_power(
+        data, materials, ior, normals, toward_light, photon_density, float(step_length), seed,
     )
-    unavailable = [row for shift, _x, _y, _z, row in data.uniform_bricks
-                   if data.hierarchy is None or shift > 3]
-    if unavailable and np.isin(hits[:, 0], unavailable).any():
-        raise ValueError("Caustic receivers must use 8³ bricks. Automatic uniform brick splitting is disabled.")
-
-    voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
-    bricks, slots = np.divmod(voxels, 512)
     codes = data.blocks[bricks, slots]
-    power = np.bincount(grouping, weights=weights) * (area / np.pi)
     rgb = (emission[codes] + power[:, None] * intensity * materials[codes, :3]).astype(np.float32)
     if not np.isfinite(rgb).all():
         raise ValueError("Caustic emission exceeds the float32 range")

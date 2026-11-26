@@ -11,6 +11,6 @@
 - Write commit subjects as `<type>: <summary>`. Use a lowercase type that matches the change, such as `feat`, `docs`, `perf`, `chore`, or `fix`.
 - Whenever the user asks for a commit, include any current changes to `AGENTS.md` in that same commit.
 - Use the project defaults unless the user requests a different value or there is a concrete reason to override a default. State the reason when you choose an override.
-- Keep mechanisms simple and direct by default. Add complexity only for a concrete, demonstrated need. Favor behavior that is easy to inspect, reason about, and debug.
+- Use the most straightforward implementation for every change. If a requested change needs a more complex design, explain the design and why the straightforward approach is insufficient, then obtain the user's explicit confirmation before implementing it.
 - Fix renderer defects in the renderer. Keep the original scene data and settings as the reference when diagnosing or verifying a renderer fix. Do not change geometry, materials, lighting, or other scene inputs to conceal a renderer defect.
 - Pass all generated scene data to the renderer through one scene file. Do not pass scene data through sidecar files, imported scene-generation code, or any other channel. Rendering settings, lights, and special material attributes may be supplied directly at render time, with a combined maximum of 30 scalar values (floats, integers, or booleans). Count each component of a vector, matrix, or collection separately, and use these settings only for their stated purpose.

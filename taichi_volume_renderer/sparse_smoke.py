@@ -73,14 +73,13 @@ class SparseSmokeScene(_OrbitScene):
                 refractive = indices != 1.
                 if any(refractive[data.blocks[start:start + 8192]].any()
                        for start in range(0, len(data.blocks), 8192)):
-                    from .caustics import DEFAULT_PHOTON_DENSITY, bake_caustics
+                    from .caustics import DEFAULT_PHOTON_DENSITY, _runtime_caustics
 
                     density = DEFAULT_PHOTON_DENSITY if caustic_photon_density is None else caustic_photon_density
                     gamma = options.pop("gamma", 1.)
                     palette[:, :3] = apply_rgb_gamma(palette[:, :3], gamma)
-                    data, palette, indices, normals, emission = bake_caustics(
-                        data, palette, indices, light, interface_normals=normals, emission=emission,
-                        photon_density=density, material_clusters=512,
+                    options["_caustic_receivers"] = _runtime_caustics(
+                        data, palette, indices, normals, light, density,
                     )
                     if options.get("refractive_shadow_passthrough", "auto") == "auto":
                         options["refractive_shadow_passthrough"] = 0.
@@ -100,7 +99,7 @@ class SparseSmokeScene(_OrbitScene):
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
-        reflection_environment=None, refractive_shadow_passthrough="auto",
+        reflection_environment=None, refractive_shadow_passthrough="auto", _caustic_receivers=None,
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -152,6 +151,7 @@ class SparseSmokeScene(_OrbitScene):
         self._interface = self._refractive and refraction_mode == "interface"
         self._use_interface_normals = self._interface and interface_normals is not None
         self._emissive = emission is not None
+        self._caustic_receivers = _caustic_receivers
         default_max_steps = REFRACTIVE_MAX_STEPS if self._refractive else 0
         self._max_steps = default_max_steps if max_steps is None else int(max_steps)
         super().__init__(background)
@@ -315,6 +315,7 @@ class SparseSmokeScene(_OrbitScene):
             if gamma != 1.0:
                 palette = palette.copy()
                 palette[:, :3] = apply_rgb_gamma(palette[:, :3], gamma)
+            self._gray_materials = bool(np.all(palette[:, :3] == palette[:, :1]))
 
             # Pair two codes in one u32 to avoid requiring 16-bit GPU storage features.
             packed = np.ascontiguousarray(blocks).view(np.uint32)
@@ -338,6 +339,7 @@ class SparseSmokeScene(_OrbitScene):
         if blocks.shape == shape:
             blocks = blocks[..., None]
         self._value_channels = blocks.shape[2]
+        self._gray_materials = self._value_channels == 1
         self._values = self._brick_field(self._value_channels, self.brick_count)
         for channel in range(self._value_channels):
             values = np.ascontiguousarray(blocks[..., channel], dtype=np.float32)
@@ -357,8 +359,10 @@ class SparseSmokeScene(_OrbitScene):
                     self._values[brick, index] = self._materials[code]
 
     def _init_light_cache(self, data, intensities):
-        # Store exactly the same light value once when all sources are achromatic.
-        self._light_channels = light_cache_channels(intensities)
+        # A scalar still suffices when both the light and the outgoing color are gray.
+        self._light_channels = (light_cache_channels(intensities)
+                                if self._gray_materials and not self._emissive and self._caustic_receivers is None
+                                else 3)
         locations = np.full((self._regular_brick_count, 4), -1, dtype=np.int32)
         uniform = np.zeros(self._regular_brick_count, dtype=bool)
         if self._native_hierarchy:
@@ -392,6 +396,7 @@ class SparseSmokeScene(_OrbitScene):
             native_centers = (bricks[:, 1:4] + .5) * width
             light_rows[bricks[:, 4]] = -(len(shared) + 1 + np.arange(len(bricks), dtype=np.int32))
             centers = np.concatenate((centers, np.column_stack((native_centers, np.zeros(len(bricks))))))
+            shared = np.concatenate((shared, bricks[:, 4]))
         self._uniform_light_count = len(centers)
         if self._uniform_light_count:
             entity_ids = centers[:, 3].astype(np.intp)
@@ -399,6 +404,7 @@ class SparseSmokeScene(_OrbitScene):
             positions = np.asarray([entity.position for entity in data.entities], dtype=np.float32)
             world_centers = np.einsum("nij,nj->ni", rotations[entity_ids], centers[:, :3]) + positions[entity_ids]
             self._uniform_light_centers = _upload_lookup_field(world_centers, 3)
+            self._uniform_light_bricks = _upload_lookup_field(shared)
             self._uniform_light_cache = ti.Vector.field(self._light_channels, dtype=ti.f32,
                                                         shape=self._uniform_light_count)
 
@@ -414,7 +420,7 @@ class SparseSmokeScene(_OrbitScene):
             self._light_rows = _upload_lookup_field(light_rows)
 
     def update_light(self):
-        """Precompute per-voxel and per-uniform-brick lighting before rendering."""
+        """Overwrite outgoing radiance, then add this scene's caustic bake."""
         if self._lighting:
             # Use short launches for desktop GPUs that enforce a kernel timeout.
             batch_size = 512
@@ -423,27 +429,59 @@ class SparseSmokeScene(_OrbitScene):
             uniform_batch_size = 8192
             for first in range(0, self._uniform_light_count, uniform_batch_size):
                 self._cache_uniform_lighting(first, min(first + uniform_batch_size, self._uniform_light_count))
+            if self._caustic_receivers is not None:
+                bricks, slots, power = self._caustic_receivers
+                if len(bricks):
+                    addresses = np.ascontiguousarray(np.column_stack((bricks, slots)), dtype=np.int32)
+                    self._add_caustic_radiance(addresses, np.ascontiguousarray(power, dtype=np.float32))
             ti.sync()
+
+    @ti.func
+    def _outgoing_radiance(self, brick, voxel, albedo, incident):
+        radiance = albedo * incident
+        if ti.static(self._emissive):
+            radiance += self._emission[self._block_code(brick, voxel)]
+        return radiance
 
     @ti.kernel
     def _cache_lighting(self, first: ti.i32, end: ti.i32):
         for row, voxel in ti.ndrange((first, end), 512):
             location = self._brick_locations[row]
             brick = self._mixed_light_bricks[row]
-            if location.w >= 0 and self._sample_voxel(brick, voxel, False).w != 0:
+            material = self._sample_voxel(brick, voxel, True)
+            if location.w >= 0 and material.w != 0:
                 coordinates = location.xyz + ti.Vector([voxel & 7, (voxel >> 3) & 7, voxel >> 6])
                 entity = location.w
                 center = self._positions[entity] + self._rotations[entity] @ (ti.cast(coordinates, ti.f32) + 0.5)
-                light = self._sample_light(center)
+                light = self._outgoing_radiance(brick, voxel, material.xyz, self._sample_light(center))
                 for channel in ti.static(range(self._light_channels)):
                     self._light_cache[row, voxel][channel] = light[channel]
 
     @ti.kernel
     def _cache_uniform_lighting(self, first: ti.i32, end: ti.i32):
         for row in range(first, end):
-            light = self._sample_light(self._uniform_light_centers[row])
+            brick = self._uniform_light_bricks[row]
+            material = self._sample_voxel(brick, 0, True)
+            light = self._outgoing_radiance(brick, 0, material.xyz, self._sample_light(self._uniform_light_centers[row]))
             for channel in ti.static(range(self._light_channels)):
                 self._uniform_light_cache[row][channel] = light[channel]
+
+    @ti.kernel
+    def _add_caustic_radiance(self, addresses: ti.types.ndarray(dtype=ti.i32, ndim=2),
+                              power: ti.types.ndarray(dtype=ti.f32, ndim=1)):
+        for hit in range(power.shape[0]):
+            brick, voxel = addresses[hit, 0], addresses[hit, 1]
+            row = brick
+            if ti.static(self._uniform_light_count):
+                row = self._light_rows[brick]
+            albedo = self._sample_voxel(brick, voxel, True).xyz
+            radiance = power[hit] * self._light_color[None] * albedo
+            if ti.static(self._uniform_light_count):
+                if row < 0:
+                    self._uniform_light_cache[-row - 1] += radiance
+            if ti.static(self._mixed_light_count):
+                if row >= 0:
+                    self._light_cache[row, voxel] += radiance
 
     @ti.func
     def _block_code(self, brick, voxel):
@@ -467,7 +505,7 @@ class SparseSmokeScene(_OrbitScene):
         return sample
 
     @ti.func
-    def _voxel_light(self, brick, index):
+    def _voxel_radiance(self, brick, index):
         light = ti.Vector([1.0, 1.0, 1.0])
         if ti.static(self._lighting):
             row = brick
@@ -765,12 +803,14 @@ class SparseSmokeScene(_OrbitScene):
                     material = self._sample_voxel(brick, voxel, True)
                     density += material.w
                     code = 0
-                    if ti.static(self._refractive or self._emissive):
+                    if ti.static(self._refractive):
                         code = self._block_code(brick, voxel)
                     if material.w != 0:
-                        radiance = material.xyz * self._voxel_light(brick, voxel)
-                        if ti.static(self._emissive):
-                            radiance += self._emission[code]
+                        radiance = material.xyz
+                        if ti.static(self._lighting):
+                            radiance = self._voxel_radiance(brick, voxel)
+                        else:
+                            radiance = self._outgoing_radiance(brick, voxel, material.xyz, ti.Vector([1., 1., 1.]))
                         lit_color += radiance * material.w
                     if ti.static(self._refractive):
                         if medium == self._ior[0]:
