@@ -93,7 +93,7 @@ class SparseSmokeScene(_OrbitScene):
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
         reflection_environment=None, refractive_shadow_passthrough="auto", caustic_photon_density=None,
-        caustic_multiplier=1.0,
+        caustic_multiplier=1.0, caustic_dispersion=0.0,
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -141,6 +141,9 @@ class SparseSmokeScene(_OrbitScene):
         if not np.isfinite(caustic_multiplier) or caustic_multiplier < 0:
             raise ValueError("caustic_multiplier must be finite and nonnegative")
         self._caustic_multiplier = float(caustic_multiplier)
+        if not np.isfinite(caustic_dispersion) or caustic_dispersion < 0:
+            raise ValueError("caustic_dispersion must be finite and nonnegative")
+        self._caustic_dispersion = float(caustic_dispersion)
         self._caustic_density = caustic_photon_density
         if self._caustic_density is not None:
             if not np.isfinite(self._caustic_density) or self._caustic_density <= 0:
@@ -177,6 +180,10 @@ class SparseSmokeScene(_OrbitScene):
             indices = np.asarray(index_of_refraction,dtype=np.float32)
             if indices.shape != (65536,) or not np.all(np.isfinite(indices) & (indices > 0)):
                 raise ValueError("Expected a positive finite index of refraction for each material code")
+            if self._caustic_density is not None and self._caustic_dispersion:
+                spread = self._caustic_dispersion * np.abs(indices.astype(np.float64) - 1.)
+                if np.any((indices - spread <= 0.) | (indices + spread > np.finfo(np.float32).max)):
+                    raise ValueError("caustic_dispersion produces an out-of-range index of refraction")
             self._ior = ti.field(ti.f32,shape=65536)
             self._ior.from_numpy(indices)
         if self._has_interface_normals:
@@ -442,11 +449,15 @@ class SparseSmokeScene(_OrbitScene):
         if self._caustic_density is not None:
             from .caustics import _caustic_power
 
-            addresses, power = _caustic_power(self, self._caustic_entity, self._caustic_uniform_bricks,
-                                             -self._light_direction[None].to_numpy(), self._caustic_density)
-            if len(power):
-                self._add_caustic_radiance(addresses, power)
-                ti.sync()
+            dispersion = self._caustic_dispersion
+            channels = enumerate((-dispersion, 0., dispersion)) if dispersion else ((-1, 0.),)
+            direction = -self._light_direction[None].to_numpy()
+            for channel, offset in channels:
+                addresses, power = _caustic_power(self, self._caustic_entity, self._caustic_uniform_bricks,
+                                                 direction, self._caustic_density, offset)
+                if len(power):
+                    self._add_caustic_radiance(addresses, power, channel)
+            ti.sync()
 
     @ti.func
     def _outgoing_radiance(self, brick, voxel, albedo, incident):
@@ -480,7 +491,7 @@ class SparseSmokeScene(_OrbitScene):
 
     @ti.kernel
     def _add_caustic_radiance(self, addresses: ti.types.ndarray(dtype=ti.i32, ndim=2),
-                              power: ti.types.ndarray(dtype=ti.f32, ndim=1)):
+                              power: ti.types.ndarray(dtype=ti.f32, ndim=1), channel: ti.i32):
         for hit in range(power.shape[0]):
             brick, voxel = addresses[hit, 0], addresses[hit, 1]
             row = brick
@@ -488,6 +499,9 @@ class SparseSmokeScene(_OrbitScene):
                 row = self._light_rows[brick]
             albedo = self._sample_voxel(brick, voxel, True).xyz
             radiance = (power[hit] * self._caustic_multiplier) * self._light_color[None] * albedo
+            for component in ti.static(range(3)):
+                if channel >= 0 and channel != component:
+                    radiance[component] = 0.
             if ti.static(self._uniform_light_count):
                 if row < 0:
                     self._uniform_light_cache[-row - 1] += radiance

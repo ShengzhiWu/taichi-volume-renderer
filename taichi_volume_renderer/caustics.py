@@ -18,6 +18,7 @@ DEFAULT_PHOTON_DENSITY = 6
 @ti.kernel
 def _trace(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, ndim=1),
            direction: ti.math.vec3, lower: ti.math.vec3, upper: ti.math.vec3,
+           dispersion: ti.f32,
            hits: ti.types.ndarray(dtype=ti.math.ivec2, ndim=1),
            weights: ti.types.ndarray(dtype=ti.f32, ndim=1)):
     for photon in origins:
@@ -28,6 +29,7 @@ def _trace(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, n
         if entry < end:
             pos += ray * (entry + INTERFACE_ENTRY_OFFSET)
             ambient = scene._ior[0]
+            ambient += dispersion * (ambient - 1.)
             previous = ambient
             previous_code, interfaces = 0, 0
             power = 1.
@@ -40,6 +42,7 @@ def _trace(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, n
                 if brick >= 0:
                     code = scene._block_code(brick, voxel)
                 medium = scene._ior[code]
+                medium += dispersion * (medium - 1.)
                 occupied = code != 0 and scene._materials[code].w > 0.
                 if occupied and medium == ambient:
                     if refracted:
@@ -81,7 +84,7 @@ def _stratified_samples(count, seed):
     return samples
 
 
-def _gather_hits(scene, entity, direction, photon_density):
+def _gather_hits(scene, entity, direction, photon_density, dispersion):
     corners = np.array(list(product(*zip(entity.lower, entity.upper))))
     corners = corners @ entity.rotation.T + entity.position
     lower, upper = corners.min(axis=0), corners.max(axis=0)
@@ -105,13 +108,13 @@ def _gather_hits(scene, entity, direction, photon_density):
     hits = np.empty((count, 2), dtype=np.int32)
     weights = np.zeros(count, dtype=np.float32)
 
-    _trace(scene, origins, direction, lower, upper, hits, weights)
+    _trace(scene, origins, direction, lower, upper, dispersion, hits, weights)
     valid = hits[:, 0] >= 0
     return hits[valid], weights[valid], area / count
 
 
-def _caustic_power(scene, entity, uniform_bricks, direction, photon_density):
-    hits, weights, area = _gather_hits(scene, entity, direction, photon_density)
+def _caustic_power(scene, entity, uniform_bricks, direction, photon_density, dispersion):
+    hits, weights, area = _gather_hits(scene, entity, direction, photon_density, dispersion)
     volumes = np.ones(scene.brick_count, dtype=np.float64)
     for shift, _x, _y, _z, row in uniform_bricks:
         volumes[row] = 2. ** (3 * shift)
