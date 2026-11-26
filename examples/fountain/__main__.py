@@ -70,16 +70,17 @@ def generate(path, *, merge_hidden=True):
             return
         ly = y * 8 + local_y + .5
         radius_sq = (x * 8 + local_x + .5)**2 + (z * 8 + local_z + .5)**2
-        pool = ((ly >= 35.) & (ly < BASIN_LEVEL + 2.25) & (radius_sq < 397.**2))
+        pool = ((ly >= 35.) & (ly < BASIN_LEVEL + POOL_WAVE_SCALE * 2.25) & (radius_sq < 397.**2))
         for tier in (LOWER, UPPER):
             top = tier[1]
-            pool |= (ly >= top - 22.) & (ly < top + .1) & (radius_sq < (tier[3] + 10.)**2)
+            pool |= ((ly >= top - 22.) & (ly < top - 1.8 + POOL_WAVE_SCALE * 2.25)
+                     & (radius_sq < (tier[3] + 10.)**2))
         values[(water & ~pool).ravel()] = airborne
 
     pools = ((BASIN_LEVEL, 397.), (LOWER[1] - 1.8, LOWER[3] + 10.),
              (UPPER[1] - 1.8, UPPER[3] + 10.))
     empty = np.zeros((8, 8, 8), dtype=np.uint16)
-    unit = 512
+    unit = 512 / POOL_WAVE_SCALE
     water = materials[int(index_for_code[3])][:5]
     normal_ids = {}
     first_normal = len(materials)
@@ -92,7 +93,8 @@ def generate(path, *, merge_hidden=True):
 
     def assign_surface_normals(values, grid, x, y, z):
         y0 = y * 8
-        if not any(y0 < level + 4.5 and y0 + 8 > level - 4.5 for level, _ in pools):
+        surface_band = POOL_WAVE_SCALE * 3.
+        if not any(y0 < level + surface_band and y0 + 8 > level - surface_band for level, _ in pools):
             return
         exposed = grid == WATER_CODE
         if not exposed.any():
@@ -104,13 +106,13 @@ def generate(path, *, merge_hidden=True):
         lz, ly, lx = np.nonzero(exposed)
         wx, wy, wz = x * 8 + lx + .5, y0 + ly + .5, z * 8 + lz + .5
         for level, radius in pools:
-            selected = (np.abs(wy - level) < 4.5) & (wx**2 + wz**2 < radius**2)
+            selected = (np.abs(wy - level) < surface_band) & (wx**2 + wz**2 < radius**2)
             if not selected.any():
                 continue
             px, pz = wx[selected], wz[selected]
             h = .01
-            dx = (water_wave(px + h, pz) - water_wave(px - h, pz)) * (.5 / h)
-            dz = (water_wave(px, pz + h) - water_wave(px, pz - h)) * (.5 / h)
+            dx = (water_wave(px + h, pz) - water_wave(px - h, pz)) * (POOL_WAVE_SCALE / (2 * h))
+            dz = (water_wave(px, pz + h) - water_wave(px, pz - h)) * (POOL_WAVE_SCALE / (2 * h))
             slopes = np.rint(np.column_stack((-dx, -dz)) * unit).astype(int)
             ids = []
             for a, b in slopes.tolist():
@@ -194,6 +196,7 @@ TARGET = np.array([0., 114., 0.])
 FRONT = np.arctan2(EYE[2], EYE[0])
 GROUND_EDGE = 508
 BASIN_LEVEL = 71
+POOL_WAVE_SCALE = 2.
 LOWER = (139, 211, 67, 232, 12)
 UPPER = (270, 327, 43, 126, 10)
 NOZZLE_HEIGHT = 336
@@ -261,10 +264,13 @@ def make_sector(coord):
     grain = solid_noise(x, y, z) + (random - .5) * 2.5
     sediment = np.sin(theta * 41 + r * .20 + y * .44) * np.sin(theta * 13 - y * .14)
 
-    def fill_water(mask):
+    def fill_water(mask, collision_mask=None):
+        # Keep the original water surface for particle collisions.
+        if collision_mask is None:
+            collision_mask = mask
+        liquid[:] |= collision_mask & ((section == 0) | (section == WATER_CODE))
         mask = mask & (section == 0)
         section[mask] = WATER_CODE
-        liquid[mask] = True
 
     def stone(mask, level, texture=.95, lift=1.05):
         mask = np.broadcast_to(mask, section.shape)
@@ -323,10 +329,13 @@ def make_sector(coord):
         modulation = value_noise(x+105, z-81, 71)
         rings = .5 + .5*np.cos(impact*(.45+.13*modulation)+2.7*modulation)
         broken_rings = rings*np.exp(-impact/44)*(.13+.71*modulation)
-        surface = BASIN_LEVEL + water_wave(x, z) + .43*broken_rings
+        wave = water_wave(x, z)
+        impact_wave = .43*broken_rings
+        basin = (r < 397) & (y >= 36)
         joints = (abs((x+61.) % 113 - 56.5) < 1.) | (abs((z+48.) % 97 - 48.5) < 1.)
         stone((r < 397) & (y >= 33) & (y < 36), 4.9+.47*sediment-.85*joints)
-        fill_water((r < 397) & (y >= 36) & (y < surface))
+        fill_water(basin & (y < BASIN_LEVEL + POOL_WAVE_SCALE * (wave + impact_wave)),
+                   basin & (y < BASIN_LEVEL + wave + impact_wave))
         waterline = (r >= 397) & (r <= 402) & (y >= BASIN_LEVEL-2) & (y <= BASIN_LEVEL+4)
         stone(waterline & (section != 0), 4.1 + .59*sediment, .73)
 
@@ -389,9 +398,10 @@ def make_sector(coord):
         rolled = ((r-crest+1.5)/(8.8-1.8*trough))**2 + ((y-lip+2.4)/6.4)**2 < 1
         stone(rolled & ~channel, 7.85 + 1.15*petals - 1.85*trough)
         ripples = water_wave(x, z)
-        level = top-1.8 + ripples
+        level = top-1.8 + POOL_WAVE_SCALE * ripples
         drain = channel & (r < crest+DRAIN_OFFSET+1.85) & (y < top-2.0)
-        fill_water((hollow & (y < level)) | drain)
+        fill_water((hollow & (y < level)) | drain,
+                   (hollow & (y < top-1.8 + ripples)) | drain)
 
     pedestal(36, 149, 88, 4)
     # The lower pedestal carries its own traced upright acanthus instead of
@@ -432,7 +442,7 @@ def sectors():
                     grids[coord] = voxels
                     if sy >= 0:
                         x, y, z = (sx+4)*128, sy*128, (sz+4)*128
-                        collision[x:x+128, y:y+128, z:z+128] = np.where(liquid, 2, voxels != 0)
+                        collision[x:x+128, y:y+128, z:z+128] = np.where(liquid, 2, voxels >= 0x8000)
     simulate_water(collision, FRONT, LOWER, UPPER, NOZZLE_HEIGHT)
 
     for sx in range(-4, 4):
@@ -447,8 +457,7 @@ def sectors():
                     if np.any(air_water):
                         if voxels is None:
                             voxels = np.zeros(cells.shape, np.uint16)
-                        if np.any(voxels[air_water]):
-                            raise RuntimeError("Airborne water overlaps the static scene")
+                        air_water &= voxels == 0
                         voxels[air_water] = np.where(cells[air_water] == 11, FOAM_CODE, WATER_CODE)
                 if voxels is not None:
                     rows = (voxels.reshape(16, 8, 16, 8, 16, 8)
