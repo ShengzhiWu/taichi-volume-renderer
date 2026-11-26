@@ -8,7 +8,6 @@ import numpy as np
 import taichi as ti
 
 from taichi_volume_renderer import DisplayWindow
-from taichi_volume_renderer.caustics import _runtime_caustics
 from taichi_volume_renderer._ground import _thicken_ground
 from taichi_volume_renderer.sparse_data import Entity, SparseVolumeData, index_brick_values
 from taichi_volume_renderer.sparse_smoke import SparseSmokeScene
@@ -96,25 +95,24 @@ class SparseSmokeTest(unittest.TestCase):
         emission[1] = (.1, .2, .3)
         intensity = (2., 3., 4.)
         sun = ((0, 0, 1), intensity)
-        with patch("taichi_volume_renderer.caustics._gather_hits",
-                   return_value=(np.array([[0, 12], [0, 13]]), np.array([1., 3.]), np.pi)):
-            receivers = _runtime_caustics(data, materials, np.ones(65536), None, sun, 6)
-        np.testing.assert_array_equal(receivers[0], [0])
-        np.testing.assert_array_equal(receivers[1], [0])
-        np.testing.assert_allclose(receivers[2], [4. / 32**3])
         scene = SparseSmokeScene(
             data, materials=materials, emission=emission, directional_light=sun,
-            _caustic_receivers=receivers,
+            index_of_refraction=np.ones(65536), caustic_photon_density=6,
         )
         scene.update_light()
-        first = scene._uniform_light_cache.to_numpy()
-        scene.update_light()
-        np.testing.assert_array_equal(scene._uniform_light_cache.to_numpy(), first)
+        baseline = scene._uniform_light_cache.to_numpy()
+        with patch("taichi_volume_renderer.caustics._gather_hits",
+                   return_value=(np.array([[0, 12], [0, 13]]), np.array([1., 3.]), np.pi)) as trace:
+            scene.update_caustics()
+            first = scene._uniform_light_cache.to_numpy()
+            scene.update_light()
+            np.testing.assert_array_equal(scene._uniform_light_cache.to_numpy(), baseline)
+            scene.update_caustics()
+            np.testing.assert_array_equal(scene._uniform_light_cache.to_numpy(), first)
+            self.assertEqual(trace.call_count, 2)
         self.assertEqual(scene._mixed_light_count, 0)
-        scene._caustic_receivers = None
-        scene.update_light()
-        np.testing.assert_allclose(first[0] - scene._uniform_light_cache.to_numpy()[0],
-                                   receivers[2][0] * np.asarray(intensity) * materials[1, :3], atol=1e-7)
+        np.testing.assert_allclose(first[0] - baseline[0],
+                                   4. / 32**3 * np.asarray(intensity) * materials[1, :3], atol=1e-7)
 
     def test_native_lookup_uses_file_levels_for_leaves_and_gaps(self):
         ti.init(arch=ti.cpu)

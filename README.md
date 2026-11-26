@@ -184,11 +184,11 @@ The renderer adds these terms to the background color for the reflected portion 
 
 #### Bake caustics
 
-Loading a VXB bakes caustics by default when directional lighting is active and the scene uses a material whose `ior` differs from `1`.
+Caustics are enabled by default for VXB scenes with directional lighting and a material whose `ior` differs from `1`.
 
-- `--no-caustics` skips load-time baking.
+- `--no-caustics` disables caustics.
 - `--caustic-photon-density N` sets the number of photons per square voxel of projected area. The default is `6`.
-- `--refractive-shadow-passthrough auto|N` controls directional shadows when refraction is enabled. At `0`, refractive voxels block direct light. At `1`, they cast ordinary volume shadows. Values between `0` and `1` blend the two shadow results. The default, `auto`, uses `0` if caustics were baked at load time and `1` otherwise. An explicit number overrides `auto`.
+- `--refractive-shadow-passthrough auto|N` controls directional shadows when refraction is enabled. At `0`, refractive voxels block direct light. At `1`, they cast ordinary volume shadows. Values between `0` and `1` blend the two shadow results. The default, `auto`, uses `0` when caustics are enabled and `1` otherwise. An explicit number overrides `auto`.
 
 The renderer multiplies deposited light by the receiving material's RGB reflectance and adds it to the outgoing radiance cache.
 
@@ -205,6 +205,7 @@ from taichi_volume_renderer import DisplayWindow
 window = DisplayWindow.from_file("path/to/world.vxb")
 scene = window.scene
 scene.update_light()
+scene.update_caustics()
 
 for frame in range(60):
     scene.render(window.pixels)

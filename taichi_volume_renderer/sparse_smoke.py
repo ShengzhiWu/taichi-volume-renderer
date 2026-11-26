@@ -56,7 +56,7 @@ class SparseSmokeScene(_OrbitScene):
                   caustics=True, caustic_photon_density=None, **options):
         suffix = Path(path).suffix.lower()
         if caustic_photon_density is not None and suffix != ".vxb":
-            raise ValueError("Load-time caustic baking requires a VXB file")
+            raise ValueError("Caustic baking requires a VXB file")
         if grid_name is not None and suffix != ".vdb":
             raise ValueError("grid_name applies only to VDB files")
         if suffix == ".cxw":
@@ -68,21 +68,14 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError("VXB supplies material values and optical properties from the file")
             data, palette, indices, normals, emission = load_vxb_volume(path, density=options.get("density", .22))
             data = _thicken_ground(data, thicken_ground)
-            light = options.get("directional_light")
-            if caustics and indices is not None and light is not None and options.get("lighting", True):
+            if caustics and indices is not None and options.get("directional_light") is not None and options.get("lighting", True):
                 refractive = indices != 1.
                 if any(refractive[data.blocks[start:start + 8192]].any()
                        for start in range(0, len(data.blocks), 8192)):
-                    from .caustics import DEFAULT_PHOTON_DENSITY, _runtime_caustics
+                    from .caustics import DEFAULT_PHOTON_DENSITY
 
-                    density = DEFAULT_PHOTON_DENSITY if caustic_photon_density is None else caustic_photon_density
-                    gamma = options.pop("gamma", 1.)
-                    palette[:, :3] = apply_rgb_gamma(palette[:, :3], gamma)
-                    options["_caustic_receivers"] = _runtime_caustics(
-                        data, palette, indices, normals, light, density,
-                    )
-                    if options.get("refractive_shadow_passthrough", "auto") == "auto":
-                        options["refractive_shadow_passthrough"] = 0.
+                    options["caustic_photon_density"] = (DEFAULT_PHOTON_DENSITY if caustic_photon_density is None
+                                                         else caustic_photon_density)
             return cls(data, materials=palette, index_of_refraction=indices, interface_normals=normals,
                        emission=emission, **options)
         if suffix == ".vdb":
@@ -99,7 +92,7 @@ class SparseSmokeScene(_OrbitScene):
         materials=None, stop_threshold=0.01, max_steps=None, gamma=1.0,
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
-        reflection_environment=None, refractive_shadow_passthrough="auto", _caustic_receivers=None,
+        reflection_environment=None, refractive_shadow_passthrough="auto", caustic_photon_density=None,
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -112,7 +105,7 @@ class SparseSmokeScene(_OrbitScene):
         emission is an optional 65,536-entry RGB table of linear outgoing radiance.
         reflection_environment optionally adds (sky RGB, sun RGB) to interface reflections.
         refractive_shadow_passthrough blends opaque refractive shadows (0) with ordinary shadows (1).
-        Auto uses 0 after load-time caustic baking and 1 otherwise.
+        Auto uses 0 when caustics are enabled and 1 otherwise.
         It applies to directional lighting when refraction is enabled.
         """
         for name, value in (("step_length", step_length), ("light_step_length", light_step_length)):
@@ -144,14 +137,23 @@ class SparseSmokeScene(_OrbitScene):
         if refraction_mode not in ("gradient", "interface"):
             raise ValueError("refraction_mode must be 'gradient' or 'interface'")
         self._refractive = index_of_refraction is not None
-        mix = 1. if refractive_shadow_passthrough == "auto" else float(refractive_shadow_passthrough)
+        self._caustic_density = caustic_photon_density
+        if self._caustic_density is not None:
+            if not np.isfinite(self._caustic_density) or self._caustic_density <= 0:
+                raise ValueError("caustic_photon_density must be finite and positive")
+            if not (self._lighting and self._directional and self._refractive and len(data.entities) == 1):
+                raise ValueError("Caustics require one indexed refractive entity and directional lighting")
+            self._caustic_entity = data.entities[0]
+            self._caustic_uniform_bricks = data.uniform_bricks
+        mix = (float(self._caustic_density is None) if refractive_shadow_passthrough == "auto"
+               else float(refractive_shadow_passthrough))
         if not 0. <= mix <= 1.:
             raise ValueError("refractive_shadow_passthrough must be auto or a number between 0 and 1")
         self._refractive_shadow_passthrough = mix if self._directional and self._refractive else 1.
         self._interface = self._refractive and refraction_mode == "interface"
-        self._use_interface_normals = self._interface and interface_normals is not None
+        self._has_interface_normals = interface_normals is not None and (self._interface or self._caustic_density is not None)
+        self._use_interface_normals = self._interface and self._has_interface_normals
         self._emissive = emission is not None
-        self._caustic_receivers = _caustic_receivers
         default_max_steps = REFRACTIVE_MAX_STEPS if self._refractive else 0
         self._max_steps = default_max_steps if max_steps is None else int(max_steps)
         super().__init__(background)
@@ -173,7 +175,7 @@ class SparseSmokeScene(_OrbitScene):
                 raise ValueError("Expected a positive finite index of refraction for each material code")
             self._ior = ti.field(ti.f32,shape=65536)
             self._ior.from_numpy(indices)
-        if self._use_interface_normals:
+        if self._has_interface_normals:
             normals = np.array(interface_normals, dtype=np.float32)
             if normals.shape != (65536, 3) or not np.all(np.isfinite(normals)):
                 raise ValueError("Expected one finite interface normal per material code")
@@ -361,7 +363,7 @@ class SparseSmokeScene(_OrbitScene):
     def _init_light_cache(self, data, intensities):
         # A scalar still suffices when both the light and the outgoing color are gray.
         self._light_channels = (light_cache_channels(intensities)
-                                if self._gray_materials and not self._emissive and self._caustic_receivers is None
+                                if self._gray_materials and not self._emissive and self._caustic_density is None
                                 else 3)
         locations = np.full((self._regular_brick_count, 4), -1, dtype=np.int32)
         uniform = np.zeros(self._regular_brick_count, dtype=bool)
@@ -420,7 +422,7 @@ class SparseSmokeScene(_OrbitScene):
             self._light_rows = _upload_lookup_field(light_rows)
 
     def update_light(self):
-        """Overwrite outgoing radiance, then add this scene's caustic bake."""
+        """Overwrite the radiance cache with direct lighting and material emission."""
         if self._lighting:
             # Use short launches for desktop GPUs that enforce a kernel timeout.
             batch_size = 512
@@ -429,12 +431,18 @@ class SparseSmokeScene(_OrbitScene):
             uniform_batch_size = 8192
             for first in range(0, self._uniform_light_count, uniform_batch_size):
                 self._cache_uniform_lighting(first, min(first + uniform_batch_size, self._uniform_light_count))
-            if self._caustic_receivers is not None:
-                bricks, slots, power = self._caustic_receivers
-                if len(bricks):
-                    addresses = np.ascontiguousarray(np.column_stack((bricks, slots)), dtype=np.int32)
-                    self._add_caustic_radiance(addresses, np.ascontiguousarray(power, dtype=np.float32))
             ti.sync()
+
+    def update_caustics(self):
+        """Trace and add caustics for the current light. Call after update_light()."""
+        if self._caustic_density is not None:
+            from .caustics import _caustic_power
+
+            addresses, power = _caustic_power(self, self._caustic_entity, self._caustic_uniform_bricks,
+                                             -self._light_direction[None].to_numpy(), self._caustic_density)
+            if len(power):
+                self._add_caustic_radiance(addresses, power)
+                ti.sync()
 
     @ti.func
     def _outgoing_radiance(self, brick, voxel, albedo, incident):
@@ -707,11 +715,11 @@ class SparseSmokeScene(_OrbitScene):
         return transmittance * shadow_weight
 
     @ti.func
-    def _sample_refractive_index(self, origin, direction, t):
+    def _sample_refractive_index(self, origin, direction, t, exact_voxel: ti.template() = False):
         ambient_ior = self._ior[0]
         index, next_sample = ambient_ior, 1e30
         for entity in range(self.entity_count):
-            next_entity, brick, voxel, _ = self._lookup(origin, direction, t, 1e30, entity)
+            next_entity, brick, voxel, _ = self._lookup(origin, direction, t, 1e30, entity, exact_voxel)
             next_sample = ti.min(next_sample,next_entity)
             if index == ambient_ior and brick >= 0:
                 index = self._ior[self._block_code(brick,voxel)]
@@ -734,7 +742,7 @@ class SparseSmokeScene(_OrbitScene):
     @ti.func
     def _ior_at(self, point):
         # At t=0 only the material matters; discard the directional skip distance.
-        index, _ = self._sample_refractive_index(point, ti.Vector([1., 1., 1.]), 0.)
+        index, _ = self._sample_refractive_index(point, ti.Vector([1., 1., 1.]), 0., True)
         return index
 
     @ti.func

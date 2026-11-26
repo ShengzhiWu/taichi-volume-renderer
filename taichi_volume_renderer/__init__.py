@@ -618,7 +618,7 @@ class DisplayWindow():
         self.fly = fly
         self._initial_pose = self.scene.get_camera_pose()
         self._tab_pressed = self._reset_pressed = False
-        self.scene.update_light()  # Calculate light and shadow
+        self._update_lighting()
         self._last_frame = perf_counter()
 
         native_window = ggui or sys.platform == "win32"
@@ -658,6 +658,11 @@ class DisplayWindow():
             if native_window:
                 gui.close()
 
+    def _update_lighting(self):
+        self.scene.update_light()
+        if hasattr(self.scene, "update_caustics"):
+            self.scene.update_caustics()
+
     def _show_loop(self, gui, native_window, resize, render, update_light_each_step, callback,
                    image_process, enable_mouse_rotating):
         iteration = 0
@@ -696,7 +701,7 @@ class DisplayWindow():
             if not gui.running:
                 break
             if update_light_each_step:
-                self.scene.update_light()
+                self._update_lighting()
             render(self.pixels)
             if image_process is not None:
                 image_process(iteration, self.pixels)

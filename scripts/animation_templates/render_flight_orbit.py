@@ -167,6 +167,7 @@ def main():
     )
     scene = window.scene
     scene.update_light()
+    scene.update_caustics()
     pixels = window.pixels
     center = scene._center
     positions, yaw, pitch = flight(args, center)
