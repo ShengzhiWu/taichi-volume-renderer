@@ -93,6 +93,7 @@ class SparseSmokeScene(_OrbitScene):
         directional_light=None, ambient_light=(0.0, 0.0, 0.0), storage="auto",
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
         reflection_environment=None, refractive_shadow_passthrough="auto", caustic_photon_density=None,
+        caustic_multiplier=1.0,
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -137,6 +138,9 @@ class SparseSmokeScene(_OrbitScene):
         if refraction_mode not in ("gradient", "interface"):
             raise ValueError("refraction_mode must be 'gradient' or 'interface'")
         self._refractive = index_of_refraction is not None
+        if not np.isfinite(caustic_multiplier) or caustic_multiplier < 0:
+            raise ValueError("caustic_multiplier must be finite and nonnegative")
+        self._caustic_multiplier = float(caustic_multiplier)
         self._caustic_density = caustic_photon_density
         if self._caustic_density is not None:
             if not np.isfinite(self._caustic_density) or self._caustic_density <= 0:
@@ -483,7 +487,7 @@ class SparseSmokeScene(_OrbitScene):
             if ti.static(self._uniform_light_count):
                 row = self._light_rows[brick]
             albedo = self._sample_voxel(brick, voxel, True).xyz
-            radiance = power[hit] * self._light_color[None] * albedo
+            radiance = (power[hit] * self._caustic_multiplier) * self._light_color[None] * albedo
             if ti.static(self._uniform_light_count):
                 if row < 0:
                     self._uniform_light_cache[-row - 1] += radiance

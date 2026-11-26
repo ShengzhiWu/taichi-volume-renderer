@@ -89,7 +89,7 @@ python -m examples.fountain "path/to/fountain.vxb"
 Open the VXB with the sparse viewer using the reference camera, lighting, and display settings.
 
 ```bash
-python -m examples.sparse_smoke "path/to/fountain.vxb" --arch cuda --camera saved --resolution 1024 607 --fixed-resolution --vertical-fov 37 --step 0.52 --light-step 1.4 --light-direction -0.71 -0.53 0.45 --light-rgb 14.72 13.28 11.36 --ambient-light 0.60 0.65 0.73 --highlight-shoulder 0.76 --refractive-shadow-passthrough 0.5
+python -m examples.sparse_smoke "path/to/fountain.vxb" --arch cuda --camera saved --resolution 1024 607 --fixed-resolution --vertical-fov 37 --step 0.52 --light-step 1.4 --light-direction -0.71 -0.53 0.45 --light-rgb 14.72 13.28 11.36 --ambient-light 0.60 0.65 0.73 --highlight-shoulder 0.76 --refractive-shadow-passthrough 0.5 --caustic-multiplier 4
 ```
 
 #### CXW
@@ -188,11 +188,12 @@ Caustics are enabled by default for VXB scenes with directional lighting and a m
 
 - `--no-caustics` disables caustics.
 - `--caustic-photon-density N` sets the number of photons per square voxel of projected area. The default is `6`.
+- `--caustic-multiplier N` scales the caustic radiance added to the cache. The default is `1`. Use a finite, nonnegative value.
 - `--refractive-shadow-passthrough auto|N` controls directional shadows when refraction is enabled. At `0`, refractive voxels block direct light. At `1`, they cast ordinary volume shadows. Values between `0` and `1` blend the two shadow results. The default, `auto`, uses `0` when caustics are enabled and `1` otherwise. An explicit number overrides `auto`.
 
 The renderer multiplies deposited light by the receiving material's RGB reflectance and adds it to the outgoing radiance cache.
 
-In Python, pass `caustics`, `caustic_photon_density`, or `refractive_shadow_passthrough` to `DisplayWindow.from_file()` or `SparseSmokeScene.from_file()` for the corresponding controls.
+In Python, pass `caustics`, `caustic_photon_density`, `caustic_multiplier`, or `refractive_shadow_passthrough` to `DisplayWindow.from_file()` or `SparseSmokeScene.from_file()`.
 
 ### Off-Screen Rendering
 
