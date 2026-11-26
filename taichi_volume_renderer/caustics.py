@@ -1,6 +1,5 @@
-"""Bake directional-light caustics into indexed sparse scene materials."""
+"""Trace directional-light caustics for the sparse radiance cache."""
 
-from dataclasses import replace
 from itertools import product
 import logging
 import math
@@ -142,141 +141,24 @@ def _gather_hits(data, materials, ior, normals, direction, photon_density, step,
     return hits[valid], weights[valid], area / count
 
 
-def _receiver_power(data, materials, ior, normals, toward_light, photon_density, step, seed,
-                    *, share_uniform=False):
-    hits, weights, area = _gather_hits(
-        data, materials, ior, normals, -toward_light, photon_density, step, seed,
-    )
-    if share_uniform:
-        volumes = np.ones(len(data.blocks), dtype=np.float64)
-        for shift, _x, _y, _z, row in data.uniform_bricks:
-            volumes[row] = 2. ** (3 * shift)
-        hits[volumes[hits[:, 0]] > 1, 1] = 0
-    else:
-        unavailable = [row for shift, _x, _y, _z, row in data.uniform_bricks
-                       if data.hierarchy is None or shift > 3]
-        if unavailable and np.isin(hits[:, 0], unavailable).any():
-            raise ValueError("Caustic receivers must use 8³ bricks. Automatic uniform brick splitting is disabled.")
-    voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
-    bricks, slots = np.divmod(voxels, 512)
-    power = np.bincount(grouping, weights=weights) * (area / np.pi)
-    if share_uniform:
-        power /= volumes[bricks]
-    return bricks, slots, power
-
-
 def _runtime_caustics(data, materials, ior, normals, light, photon_density):
     if not math.isfinite(photon_density) or photon_density <= 0:
         raise ValueError("photon_density must be finite and positive")
-    ior = _material_table(ior, (65536,))
-    if np.any(ior <= 0):
-        raise ValueError("Caustic baking requires positive refractive indices")
-    normals = _normalized_normals(normals)
+    if ior.shape != (65536,) or not np.all(np.isfinite(ior) & (ior > 0)):
+        raise ValueError("Expected a positive finite index of refraction for each material code")
+    if normals is not None:
+        if normals.shape != (65536, 3) or not np.all(np.isfinite(normals)):
+            raise ValueError("Expected one finite interface normal per material code")
+        lengths = np.linalg.norm(normals.astype(np.float64), axis=1)
+        normals = (normals / np.where(lengths > 0, lengths, 1.)[:, None]).astype(np.float32)
     toward_light, _ = directional_light_parameters(light)
-    return _receiver_power(
-        data, materials, ior, normals, toward_light, photon_density, .5, 0, share_uniform=True,
-    )
+    hits, weights, area = _gather_hits(data, materials, ior, normals, -toward_light, photon_density, .5, 0)
 
-
-def _normalized_normals(normals):
-    if normals is None:
-        return None
-    normals = _material_table(normals, (65536, 3), nonnegative=False)
-    lengths = np.linalg.norm(normals.astype(np.float64), axis=1)
-    return (normals / np.where(lengths > 0, lengths, 1.)[:, None]).astype(np.float32)
-
-
-def bake_caustics(data, materials, index_of_refraction, directional_light, *,
-                  interface_normals=None, emission=None, photon_density=DEFAULT_PHOTON_DENSITY,
-                  step_length=0.5, seed=0, material_clusters=None):
-    """Return renderer-ready data, materials, IOR, normals and emission after baking.
-
-    Initialize Taichi first. The scene must have one indexed entity. Each photon
-    deposits at its first non-refractive occupied voxel after refraction.
-    Uniform bricks larger than 8³ can refract light but cannot receive this bake.
-    The photon count is derived from the projected area and photon_density,
-    which defaults to six photons per square voxel.
-    Set material_clusters to cluster baked RGB reflectance and emission.
-    """
-    if (len(data.entities) != 1 or data.blocks.dtype != np.uint16
-            or data.blocks.ndim != 2 or data.blocks.shape[1] != 512 or not len(data.blocks)):
-        raise ValueError("Caustic baking requires a single indexed sparse entity")
-    if not math.isfinite(photon_density) or photon_density <= 0:
-        raise ValueError("photon_density must be finite and positive")
-    if not np.isfinite(step_length) or step_length <= 0:
-        raise ValueError("Caustic baking requires a finite positive step length")
-    if material_clusters is not None and (
-        isinstance(material_clusters, (bool, np.bool_))
-        or not isinstance(material_clusters, (int, np.integer)) or not 1 <= material_clusters <= 65536
-    ):
-        raise ValueError("material_clusters must be an integer between 1 and 65536")
-    toward_light, intensity = directional_light_parameters(directional_light)
-    materials = _material_table(materials, (65536, 4))
-    ior = _material_table(index_of_refraction, (65536,))
-    if np.any(ior <= 0):
-        raise ValueError("Caustic baking requires positive refractive indices")
-    normals = _normalized_normals(interface_normals)
-    emission = (np.zeros((65536, 3), dtype=np.float32) if emission is None
-                else _material_table(emission, (65536, 3)))
-    bricks, slots, power = _receiver_power(
-        data, materials, ior, normals, toward_light, photon_density, float(step_length), seed,
-    )
-    codes = data.blocks[bricks, slots]
-    rgb = (emission[codes] + power[:, None] * intensity * materials[codes, :3]).astype(np.float32)
-    if not np.isfinite(rgb).all():
-        raise ValueError("Caustic emission exceeds the float32 range")
-    changed = np.any(rgb != emission[codes], axis=1)
-    if not changed.any():
-        return data, materials, ior, normals, emission
-
-    sources = codes[changed]
-    baked_materials = materials[sources]
-    baked_emission = rgb[changed]
-    if material_clusters is not None and len(sources) > material_clusters:
-        points = np.column_stack((baked_materials[:, :3], baked_emission))
-        representatives = _cluster_materials(points, int(material_clusters))
-        baked_materials[:, :3] = representatives[:, :3]
-        baked_emission = representatives[:, 3:]
-    columns = [baked_materials, baked_emission, ior[sources]]
-    if normals is not None:
-        columns.append(normals[sources])
-    rows, mapping = np.unique(np.column_stack(columns), axis=0, return_inverse=True)
-    used = np.zeros(65536, dtype=bool)
-    for start in range(0, len(data.blocks), 8192):
-        used[data.blocks[start:start + 8192]] = True
-    used[0] = True
-    available = np.flatnonzero(~used)
-    if len(rows) > len(available):
-        raise ValueError("Baked caustics exceed the 16-bit sparse material limit")
-    new_codes = available[:len(rows)]
-    materials, ior, emission = materials.copy(), ior.copy(), emission.copy()
-    materials[new_codes], emission[new_codes], ior[new_codes] = rows[:, :4], rows[:, 4:7], rows[:, 7]
-    if normals is not None:
-        normals[new_codes] = rows[:, 8:]
-    blocks = data.blocks.copy()
-    blocks[bricks[changed], slots[changed]] = new_codes[mapping]
-    return replace(data, blocks=blocks), materials, ior, normals, emission
-
-
-def _cluster_materials(points, count):
-    try:
-        from sklearn.cluster import MiniBatchKMeans
-        from sklearn.metrics import pairwise_distances_argmin
-    except ImportError as exc:
-        raise ImportError("Caustic material clustering requires scikit-learn") from exc
-
-    # Each point is one voxel, so common reflectance/emission pairs carry more weight.
-    model = MiniBatchKMeans(n_clusters=count, batch_size=4096, n_init=1, random_state=21).fit(points)
-    labels = model.labels_
-    errors = np.sum((points - model.cluster_centers_[labels])**2, axis=1)
-    order = np.argsort(errors, kind="stable")
-    _, first = np.unique(labels[order], return_index=True)
-    representatives = points[order[first]]
-    return representatives[pairwise_distances_argmin(points, representatives)]
-
-
-def _material_table(values, shape, nonnegative=True):
-    table = np.asarray(values, dtype=np.float32)
-    if table.shape != shape or not np.all(np.isfinite(table)) or (nonnegative and np.any(table < 0.)):
-        raise ValueError(f"Invalid caustic material table, expected shape {shape}")
-    return table
+    volumes = np.ones(len(data.blocks), dtype=np.float64)
+    for shift, _x, _y, _z, row in data.uniform_bricks:
+        volumes[row] = 2. ** (3 * shift)
+    hits[volumes[hits[:, 0]] > 1, 1] = 0
+    voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
+    bricks, slots = np.divmod(voxels, 512)
+    power = np.bincount(grouping, weights=weights) * (area / np.pi) / volumes[bricks]
+    return bricks, slots, power
