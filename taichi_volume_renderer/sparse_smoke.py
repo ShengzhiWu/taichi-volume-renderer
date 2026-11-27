@@ -454,12 +454,12 @@ class SparseSmokeScene(_OrbitScene):
         if self._caustic_density is not None:
             from .caustics import _caustic_power
 
-            for color, addresses, power in _caustic_power(
+            for addresses, power in _caustic_power(
                 self, self._caustic_entity, self._caustic_uniform_bricks, -self._light_direction[None].to_numpy(),
                 self._caustic_density, self._caustic_dispersion, self._caustic_spectral_samples,
             ):
                 if len(power):
-                    self._add_caustic_radiance(addresses, power, color)
+                    self._add_caustic_radiance(addresses, power)
             ti.sync()
 
     @ti.func
@@ -494,14 +494,14 @@ class SparseSmokeScene(_OrbitScene):
 
     @ti.kernel
     def _add_caustic_radiance(self, addresses: ti.types.ndarray(dtype=ti.i32, ndim=2),
-                              power: ti.types.ndarray(dtype=ti.f32, ndim=1), color: ti.math.vec3):
+                              power: ti.types.ndarray(dtype=ti.math.vec3, ndim=1)):
         for hit in range(power.shape[0]):
             brick, voxel = addresses[hit, 0], addresses[hit, 1]
             row = brick
             if ti.static(self._uniform_light_count):
                 row = self._light_rows[brick]
             albedo = self._sample_voxel(brick, voxel, True).xyz
-            radiance = (power[hit] * self._caustic_multiplier) * self._light_color[None] * albedo * color
+            radiance = (power[hit] * self._caustic_multiplier) * self._light_color[None] * albedo
             if ti.static(self._uniform_light_count):
                 if row < 0:
                     self._uniform_light_cache[-row - 1] += radiance

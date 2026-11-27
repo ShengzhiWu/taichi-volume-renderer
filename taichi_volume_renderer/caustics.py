@@ -1,6 +1,5 @@
 """Trace directional-light caustics for the sparse radiance cache."""
 
-from colorsys import hsv_to_rgb
 from itertools import product
 import logging
 import math
@@ -44,7 +43,7 @@ def _find_refraction(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.ma
 @ti.kernel
 def _trace(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, ndim=1),
            direction: ti.math.vec3, lower: ti.math.vec3, upper: ti.math.vec3,
-           dispersion: ti.f32, prepared: ti.template(),
+           offsets: ti.types.ndarray(dtype=ti.f32, ndim=1), prepared: ti.template(),
            remaining: ti.types.ndarray(dtype=ti.i32, ndim=1),
            hits: ti.types.ndarray(dtype=ti.math.ivec2, ndim=1),
            weights: ti.types.ndarray(dtype=ti.f32, ndim=1)):
@@ -53,8 +52,10 @@ def _trace(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, n
         ray = direction
         pos = origins[photon]
         steps = 0
+        dispersion = 0.
         if ti.static(prepared):
             steps = remaining[photon]
+            dispersion = offsets[photon]
         else:
             entry, end = intersect_box(pos, ray, lower, upper, 0., 1e30)
             if entry < end:
@@ -117,17 +118,12 @@ def _stratified_samples(count, seed):
     return samples
 
 
-def _spectral_samples(dispersion, count):
-    # One midpoint per equal-width interval from infrared to ultraviolet.
-    hues = (np.arange(count) + .5) * (7. / (6 * count)) - 1. / 6
-    colors = np.array([
-        (1. + 6. * hue, 0., 0.) if hue < 0. else
-        (6. * (1. - hue), 0., 6. * (1. - hue)) if hue > 5. / 6 else hsv_to_rgb(hue, 1., 1.)
-        for hue in hues
-    ])
-    weights = colors.sum(axis=0)
-    # Preserve the energy of each input RGB channel as the sample count changes.
-    return zip(dispersion * (3. * hues - 1.), colors / np.where(weights > 0., weights, 1.))
+def _spectral_rgb(hues):
+    visible = np.clip(hues, 0., 5. / 6)
+    phase = (6. * visible[:, None] + np.array([5., 3., 1.], dtype=visible.dtype)) % 6.
+    rgb = 1. - np.clip(np.minimum(phase, 4. - phase), 0., 1.)
+    fade = np.clip(np.minimum(1. + 6. * hues, 6. * (1. - hues)), 0., 1.)
+    return rgb * fade[:, None]
 
 
 def _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_samples):
@@ -160,20 +156,32 @@ def _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_
         return
     hits = np.empty((len(origins), 2), dtype=np.int32)
     weights = np.empty(len(origins), dtype=np.float32)
-    samples = _spectral_samples(dispersion, spectral_samples) if dispersion else ((0., (1., 1., 1.)),)
-    for offset, color in samples:
-        _trace(scene, origins, direction, lower, upper, offset, bool(dispersion), remaining, hits, weights)
+    rng = np.random.default_rng(0)
+    offsets = np.zeros(1, dtype=np.float32)
+    for _ in range(spectral_samples if dispersion else 1):
+        if dispersion:
+            hues = rng.uniform(-1. / 6, 1., len(origins)).astype(np.float32)
+            offsets = dispersion * (3. * hues - 1.)
+        _trace(scene, origins, direction, lower, upper, offsets, bool(dispersion), remaining, hits, weights)
         valid = hits[:, 0] >= 0
-        yield color, hits[valid], weights[valid], area / count
+        power = weights[valid]
+        if dispersion:
+            # Each RGB component has mean 3/7 over the full hue interval.
+            power = power[:, None] * _spectral_rgb(hues[valid]) * (7. / (3. * spectral_samples))
+        yield hits[valid], power, area / count
 
 
 def _caustic_power(scene, entity, uniform_bricks, direction, photon_density, dispersion, spectral_samples):
     volumes = np.ones(scene.brick_count, dtype=np.float64)
     for shift, _x, _y, _z, row in uniform_bricks:
         volumes[row] = 2. ** (3 * shift)
-    for color, hits, weights, area in _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_samples):
+    for hits, weights, area in _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_samples):
         hits[volumes[hits[:, 0]] > 1, 1] = 0
         voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
         bricks, slots = np.divmod(voxels, 512)
-        power = np.bincount(grouping, weights=weights) * (area / np.pi) / volumes[bricks]
-        yield color, np.column_stack((bricks, slots)).astype(np.int32), power.astype(np.float32)
+        power = np.column_stack([np.bincount(grouping, weights=component)
+                                 for component in np.atleast_2d(weights.T)])
+        power *= (area / np.pi / volumes[bricks])[:, None]
+        yield np.column_stack((bricks, slots)).astype(np.int32), np.broadcast_to(
+            power, (len(bricks), 3),
+        ).astype(np.float32, order="C")

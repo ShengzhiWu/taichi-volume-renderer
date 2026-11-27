@@ -8,7 +8,7 @@ import numpy as np
 import taichi as ti
 
 from taichi_volume_renderer import DisplayWindow
-from taichi_volume_renderer.caustics import _spectral_samples
+from taichi_volume_renderer.caustics import _spectral_rgb
 from taichi_volume_renderer._ground import _thicken_ground
 from taichi_volume_renderer.sparse_data import Entity, SparseVolumeData, index_brick_values
 from taichi_volume_renderer.sparse_smoke import SparseSmokeScene
@@ -18,15 +18,12 @@ from taichi_volume_renderer.vxb_scene import load_vxb_volume
 
 
 class SparseSmokeTest(unittest.TestCase):
-    def test_caustic_spectral_samples_cover_hues_without_changing_rgb_energy(self):
-        samples = list(_spectral_samples(.1, 7))
-        offsets, colors = zip(*samples)
-        np.testing.assert_allclose(offsets, np.linspace(-.125, .175, 7))
-        np.testing.assert_allclose(np.sum(colors, axis=0), [1., 1., 1.])
-        np.testing.assert_array_equal(colors[0][1:], [0., 0.])
-        self.assertEqual(colors[-1][1], 0.)
-        self.assertGreater(colors[-1][0], 0.)
-        self.assertGreater(colors[-1][2], 0.)
+    def test_caustic_spectral_colors_fade_to_black_at_the_endpoints(self):
+        hues = np.array([-1/6, -1/12, 0., 1/3, 2/3, 5/6, 11/12, 1.])
+        np.testing.assert_allclose(_spectral_rgb(hues), [
+            [0., 0., 0.], [.5, 0., 0.], [1., 0., 0.], [0., 1., 0.],
+            [0., 0., 1.], [1., 0., 1.], [.5, 0., .5], [0., 0., 0.],
+        ], atol=1e-7)
 
     def test_shadow_samples_full_steps_at_their_midpoints(self):
         ti.init(arch=ti.cpu)
@@ -113,7 +110,7 @@ class SparseSmokeTest(unittest.TestCase):
         scene.update_light()
         baseline = scene._uniform_light_cache.to_numpy()
         with patch("taichi_volume_renderer.caustics._gather_hits",
-                   return_value=[((1., 1., 1.), np.array([[0, 12], [0, 13]]), np.array([1., 3.]), np.pi)]) as trace:
+                   return_value=[(np.array([[0, 12], [0, 13]]), np.array([1., 3.]), np.pi)]) as trace:
             scene.update_caustics()
             first = scene._uniform_light_cache.to_numpy()
             scene.update_light()
