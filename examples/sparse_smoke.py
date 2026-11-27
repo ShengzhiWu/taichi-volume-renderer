@@ -42,7 +42,9 @@ def main():
     parser.add_argument("--caustic-multiplier", type=float, default=1., metavar="N",
                         help="Scale caustic brightness (default: 1)")
     parser.add_argument("--caustic-dispersion", type=float, default=0., metavar="N",
-                        help="Separate RGB refraction for caustics (default: 0)")
+                        help="Scale spectral refraction for caustics (default: 0)")
+    parser.add_argument("--caustic-spectral-samples", type=int, default=3, metavar="N",
+                        help="Number of spectral samples for dispersive caustics (default: 3)")
     parser.add_argument("--refractive-shadow-passthrough", default="auto", metavar="auto|N",
                         help="Blend opaque refractive shadows (0) with ordinary shadows (1). "
                              "Auto uses 0 if caustics are baked at load time and 1 otherwise.")
@@ -99,6 +101,7 @@ def main():
             max_steps=args.max_steps,
             caustics=not args.no_caustics, caustic_photon_density=args.caustic_photon_density,
             caustic_multiplier=args.caustic_multiplier, caustic_dispersion=args.caustic_dispersion,
+            caustic_spectral_samples=args.caustic_spectral_samples,
             refractive_shadow_passthrough=args.refractive_shadow_passthrough,
             thicken_ground=args.thicken_ground, lighting=args.lighting, ambient_light=args.ambient_light,
             directional_light=(args.light_direction, args.light_rgb) if args.light_type == "directional" else None,

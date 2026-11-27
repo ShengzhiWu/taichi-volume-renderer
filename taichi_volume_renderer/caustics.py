@@ -1,5 +1,6 @@
 """Trace directional-light caustics for the sparse radiance cache."""
 
+from colorsys import hsv_to_rgb
 from itertools import product
 import logging
 import math
@@ -116,7 +117,20 @@ def _stratified_samples(count, seed):
     return samples
 
 
-def _gather_hits(scene, entity, direction, photon_density, dispersion):
+def _spectral_samples(dispersion, count):
+    # One midpoint per equal-width interval from infrared to ultraviolet.
+    hues = (np.arange(count) + .5) * (7. / (6 * count)) - 1. / 6
+    colors = np.array([
+        (1. + 6. * hue, 0., 0.) if hue < 0. else
+        (6. * (1. - hue), 0., 6. * (1. - hue)) if hue > 5. / 6 else hsv_to_rgb(hue, 1., 1.)
+        for hue in hues
+    ])
+    weights = colors.sum(axis=0)
+    # Preserve the energy of each input RGB channel as the sample count changes.
+    return zip(dispersion * (3. * hues - 1.), colors / np.where(weights > 0., weights, 1.))
+
+
+def _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_samples):
     corners = np.array(list(product(*zip(entity.lower, entity.upper))))
     corners = corners @ entity.rotation.T + entity.position
     lower, upper = corners.min(axis=0), corners.max(axis=0)
@@ -146,20 +160,20 @@ def _gather_hits(scene, entity, direction, photon_density, dispersion):
         return
     hits = np.empty((len(origins), 2), dtype=np.int32)
     weights = np.empty(len(origins), dtype=np.float32)
-    offsets = (-dispersion, 0., dispersion) if dispersion else (0.,)
-    for offset in offsets:
+    samples = _spectral_samples(dispersion, spectral_samples) if dispersion else ((0., (1., 1., 1.)),)
+    for offset, color in samples:
         _trace(scene, origins, direction, lower, upper, offset, bool(dispersion), remaining, hits, weights)
         valid = hits[:, 0] >= 0
-        yield hits[valid], weights[valid], area / count
+        yield color, hits[valid], weights[valid], area / count
 
 
-def _caustic_power(scene, entity, uniform_bricks, direction, photon_density, dispersion):
+def _caustic_power(scene, entity, uniform_bricks, direction, photon_density, dispersion, spectral_samples):
     volumes = np.ones(scene.brick_count, dtype=np.float64)
     for shift, _x, _y, _z, row in uniform_bricks:
         volumes[row] = 2. ** (3 * shift)
-    for channel, (hits, weights, area) in enumerate(_gather_hits(scene, entity, direction, photon_density, dispersion)):
+    for color, hits, weights, area in _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_samples):
         hits[volumes[hits[:, 0]] > 1, 1] = 0
         voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
         bricks, slots = np.divmod(voxels, 512)
         power = np.bincount(grouping, weights=weights) * (area / np.pi) / volumes[bricks]
-        yield channel if dispersion else -1, np.column_stack((bricks, slots)).astype(np.int32), power.astype(np.float32)
+        yield color, np.column_stack((bricks, slots)).astype(np.int32), power.astype(np.float32)
