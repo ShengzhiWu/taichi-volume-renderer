@@ -20,10 +20,14 @@ from .wave_field import hash01, value_noise, water_wave
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="Path for the generated VXB")
+    parser.add_argument("--resolution", type=int, default=2 * GROUND_EDGE,
+                        help="Paving width in voxels (10–1016, default: 1016)")
     parser.add_argument("--no-merge-hidden-materials", action="store_true", help="Preserve interior stone colors")
     args = parser.parse_args()
 
-    generate(args.output, merge_hidden=not args.no_merge_hidden_materials)
+    if not 10 <= args.resolution <= 2 * GROUND_EDGE:
+        parser.error("--resolution must be between 10 and 1016")
+    generate(args.output, resolution=args.resolution, merge_hidden=not args.no_merge_hidden_materials)
 
 
 # VXB export
@@ -31,7 +35,7 @@ def main():
 POOL_NORMAL_CLUSTERS = 200
 
 
-def _camera():
+def _camera(scale, center):
     # Preserve the framing of the original Y-up scene when exporting to Z-up VXB.
     forward = TARGET - EYE
     forward /= np.linalg.norm(forward)
@@ -42,11 +46,13 @@ def _camera():
     rotation = rotation_quaternion_to_matrix(quaternion / np.linalg.norm(quaternion))[[0, 2, 1]]
     rotation[:, 2] *= -1
     xyzw = rotation_matrix_to_quaternion(rotation)[[1, 2, 3, 0]]
-    return CameraPose(tuple(EYE[[0, 2, 1]]), tuple(xyzw))
+    return CameraPose(tuple(EYE[[0, 2, 1]] * scale + (center, center, 0.)), tuple(xyzw))
 
 
-def generate(path, *, merge_hidden=True):
-    world = dict(sectors())
+def generate(path, *, resolution=1016, merge_hidden=True):
+    scale = resolution / (2 * GROUND_EDGE)
+    center = .5 * (resolution % 2)
+    world = dict(sectors(scale, center))
     palette = packed_color_materials(.65)
     palette[WATER_CODE] = (.31, .42, .43, .0024)
     palette[FOAM_CODE] = (1., 1., 1., .70)
@@ -69,8 +75,8 @@ def generate(path, *, merge_hidden=True):
         water = grid == WATER_CODE
         if not water.any():
             return
-        ly = y * 8 + local_y + .5
-        radius_sq = (x * 8 + local_x + .5)**2 + (z * 8 + local_z + .5)**2
+        ly = (y * 8 + local_y + .5) / scale
+        radius_sq = ((x * 8 + local_x + .5 - center) / scale)**2 + ((z * 8 + local_z + .5 - center) / scale)**2
         pool = ((ly >= 35.) & (ly < BASIN_LEVEL + POOL_WAVE_SCALE * 2.25) & (radius_sq < 397.**2))
         for tier in (LOWER, UPPER):
             top = tier[1]
@@ -93,9 +99,9 @@ def generate(path, *, merge_hidden=True):
         return sector.get(slot, empty).reshape(8, 8, 8)
 
     def assign_surface_normals(values, grid, x, y, z):
-        y0 = y * 8
+        y0 = y * 8 / scale
         surface_band = POOL_WAVE_SCALE * 3.
-        if not any(y0 < level + surface_band and y0 + 8 > level - surface_band for level, _ in pools):
+        if not any(y0 < level + surface_band and y0 + 8 / scale > level - surface_band for level, _ in pools):
             return
         exposed = grid == WATER_CODE
         if not exposed.any():
@@ -105,7 +111,9 @@ def generate(path, *, merge_hidden=True):
         exposed[:, 1:, :] &= grid[:, :-1, :] == WATER_CODE
         exposed[:, 0, :] &= adjacent_brick(x, y - 1, z)[:, -1, :] == WATER_CODE
         lz, ly, lx = np.nonzero(exposed)
-        wx, wy, wz = x * 8 + lx + .5, y0 + ly + .5, z * 8 + lz + .5
+        wx = (x * 8 + lx + .5 - center) / scale
+        wy = y0 + (ly + .5) / scale
+        wz = (z * 8 + lz + .5 - center) / scale
         for level, radius in pools:
             selected = (np.abs(wy - level) < surface_band) & (wx**2 + wz**2 < radius**2)
             if not selected.any():
@@ -173,7 +181,7 @@ def generate(path, *, merge_hidden=True):
         roots = {coord: remap_brick(brick) for coord, brick in roots.items()}
         materials[first_normal:] = [water + tuple(normal) for normal in centers]
 
-    scene = VxbScene(fields, tuple(materials), (128, 32, 8), roots, _camera())
+    scene = VxbScene(fields, tuple(materials), (128, 32, 8), roots, _camera(scale, center))
     stone_materials = [index for index, code in enumerate(codes) if code & 0x8000 and code != FOAM_CODE]
     del world
     scene = merge_hidden_materials(scene, stone_materials, enabled=merge_hidden)
@@ -251,12 +259,12 @@ def spill_profile(theta, rim, count):
     return tangential, band, trough, petal, relief, half_width
 
 
-def make_sector(coord):
+def make_sector(coord, scale, center):
     sx, sy, sz = coord
     axis = np.arange(128, dtype=np.float32) + .5
-    x = (axis + sx*128)[:, None, None]
-    y = (axis + sy*128)[None, :, None]
-    z = (axis + sz*128)[None, None, :]
+    x = ((axis + sx*128 - center) / scale)[:, None, None]
+    y = ((axis + sy*128) / scale)[None, :, None]
+    z = ((axis + sz*128 - center) / scale)[None, None, :]
     r = np.hypot(x, z)
     theta = np.arctan2(z, x)
     section = np.zeros((128, 128, 128), np.uint16)
@@ -293,8 +301,10 @@ def make_sector(coord):
         staggered_x = x + 53.*(row % 2)
         col = np.floor(staggered_x/106.)
         # Leave one empty voxel between pavers through the full paving depth.
-        paver = (staggered_x % 106. < 105.) & (z % 79. < 78.)
-        ground = (edge < GROUND_EDGE) & (y >= -14) & (y < -2)
+        paver = (staggered_x % 106. < 106. - 1. / scale) & (z % 79. < 79. - 1. / scale)
+        if 79. * scale < 2.:
+            paver = True
+        ground = (edge < GROUND_EDGE) & (y >= -max(14., .5 / scale)) & (y < -2)
         damp = np.exp(-((r-433)/36.)**2) * (.46+.54*value_noise(x-71,z+36,69))
         natural = 4.28+.8*(hash01(col,row)-.5)+variation-.72*damp
         stone(ground & paver, natural, 0., lift=0.)
@@ -342,7 +352,7 @@ def make_sector(coord):
         stone(waterline & (section != 0), 4.1 + .59*sediment, .73)
 
     def pedestal(bottom, top, radius, lobes):
-        if sy*128 >= top or (sy+1)*128 <= bottom:
+        if sy*128 >= top*scale or (sy+1)*128 <= bottom*scale:
             return
         h = y - bottom
         height = top-bottom
@@ -380,7 +390,7 @@ def make_sector(coord):
             stone((abs(y-elevation) < thickness) & (r < base + flare*radius), 7.25)
 
     def bowl(bottom, top, root, rim, lobes):
-        if sy*128 >= top+13 or (sy+1)*128 <= bottom:
+        if sy*128 >= (top+13)*scale or (sy+1)*128 <= bottom*scale:
             return
         t = np.clip((y-bottom)/(top-bottom), 0, 1)
         tangent, _, trough, petals, rim_relief, width = spill_profile(theta, rim, lobes)
@@ -413,7 +423,7 @@ def make_sector(coord):
         pedestal_leaf = relief_at(front_angle*81, y-60, pedestal=True)
         t = np.clip((y-36)/113, 0, 1)
         shoulder = 88*(.49+.48*abs(2*t-1)**2.3)+8.6
-        carved = (abs(front_angle) < 1.08) & (pedestal_leaf > .68)
+        carved = (abs(front_angle) < 1.08) & (pedestal_leaf > .68) & (y < 256)
         stone(carved & (r >= shoulder-12) & (r < shoulder+pedestal_leaf),
               5.15+.239*pedestal_leaf+.34*sediment, .56)
     bowl(*LOWER)
@@ -426,7 +436,7 @@ def make_sector(coord):
     return section, liquid
 
 
-def plant_grass(grids):
+def plant_grass(grids, scale, center):
     rng = np.random.default_rng(381)
     roots = []
     for offsets in ((0, 10), (0, 10), (0,), (0,), (0,), (0,)):
@@ -441,21 +451,22 @@ def plant_grass(grids):
 
     scales = rng.uniform(.65, 1.35, len(roots))
     scales *= 3. / scales.mean()
-    for (x, z), scale in zip(roots, scales):
+    for (x, z), size in zip(roots, scales):
+        joint_z = np.ceil((z + 1.) * scale + center - .5) - .5
         blades = rng.integers(5, 11)
         heading = rng.uniform(0., 2. * np.pi)
         spread = rng.uniform(.65, 1.35)
         for blade in range(blades):
             angle = heading + blade * (2. * np.pi / blades) + rng.uniform(-.3, .3)
-            height = scale * rng.uniform(7., 14.)
-            lean = scale * spread * rng.uniform(2.5, 6.)
+            height = size * rng.uniform(7., 14.)
+            lean = size * spread * rng.uniform(2.5, 6.)
             curve = rng.uniform(1.5, 3.)
             for t in np.linspace(0., 1., 144):
                 # Upright blades curve away from the root near their tips.
                 bend = lean * t**curve
-                cell = (int(np.floor(x + .5 + bend * np.cos(angle))),
-                        int(np.floor(-4. + height * t)),
-                        int(np.floor(z + .5 + bend * np.sin(angle))))
+                cell = (int(np.floor((x + .5 + bend * np.cos(angle)) * scale + center)),
+                        int(np.floor((-4. + height * t) * scale)),
+                        int(np.floor(joint_z + bend * np.sin(angle) * scale)))
                 sector = tuple(axis // 128 for axis in cell)
                 local = tuple(axis % 128 for axis in cell)
                 if sector not in grids:
@@ -465,35 +476,39 @@ def plant_grass(grids):
                     voxels[local] = 4 + min(int(t * 3), 2)
 
 
-def sectors():
+def sectors(scale, center):
     grids = {}
     # Collision cells are 0 for air, 1 for stone, 2 for standing water.
     # Airborne track samples occupy values >= 3 and do not act as colliders.
-    collision = np.zeros((1024, 512, 1024), np.uint8)
-    for sx in range(-4, 4):
-        for sy in range(-1, 4):
-            for sz in range(-4, 4):
+    span = int(np.ceil((GROUND_EDGE + 4) * scale / 128))
+    layers = int(np.ceil(512 * scale / 128))
+    offset = span * 128
+    collision = np.zeros((2 * offset, layers * 128, 2 * offset), np.uint8)
+    for sx in range(-span, span):
+        for sy in range(-1, layers):
+            for sz in range(-span, span):
                 coord = sx, sy, sz
-                near_x = max(sx*128, -(sx+1)*128, 0)
-                near_z = max(sz*128, -(sz+1)*128, 0)
-                if sy >= 0 and np.hypot(near_x, near_z) >= (463, 267, 145, 0)[sy]:
+                near_x = max(sx*128 - center, -(sx+1)*128 + center, 0)
+                near_z = max(sz*128 - center, -(sz+1)*128 + center, 0)
+                band = min(int(sy*128 / scale) // 128, 3)
+                if sy >= 0 and np.hypot(near_x, near_z) >= (463, 267, 145, 0)[band] * scale:
                     continue
-                voxels, liquid = make_sector(coord)
+                voxels, liquid = make_sector(coord, scale, center)
                 if np.any(voxels):
                     grids[coord] = voxels
                     if sy >= 0:
-                        x, y, z = (sx+4)*128, sy*128, (sz+4)*128
+                        x, y, z = sx*128 + offset, sy*128, sz*128 + offset
                         collision[x:x+128, y:y+128, z:z+128] = np.where(liquid, 2, voxels >= 0x8000)
-    simulate_water(collision, FRONT, LOWER, UPPER, NOZZLE_HEIGHT)
-    plant_grass(grids)
+    simulate_water(collision, FRONT, LOWER, UPPER, NOZZLE_HEIGHT, scale, center)
+    plant_grass(grids, scale, center)
 
-    for sx in range(-4, 4):
-        for sy in range(-1, 4):
-            for sz in range(-4, 4):
+    for sx in range(-span, span):
+        for sy in range(-1, layers):
+            for sz in range(-span, span):
                 coord = sx, sy, sz
                 voxels = grids.pop(coord, None)
                 if sy >= 0:
-                    x, y, z = (sx+4)*128, sy*128, (sz+4)*128
+                    x, y, z = sx*128 + offset, sy*128, sz*128 + offset
                     cells = collision[x:x+128, y:y+128, z:z+128]
                     air_water = cells >= 3
                     if np.any(air_water):

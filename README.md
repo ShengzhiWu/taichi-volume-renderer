@@ -86,6 +86,8 @@ python -m pip install -e . numba
 python -m examples.fountain "path/to/fountain.vxb"
 ```
 
+Use `--resolution N` to set the paving width in voxels (10–1016, default 1016). The generator scales the fountain and water trajectories to that grid. Paver joints stay one voxel wide where there is room for them.
+
 Open the VXB with the sparse viewer using the reference camera, lighting, and display settings.
 
 ```bash

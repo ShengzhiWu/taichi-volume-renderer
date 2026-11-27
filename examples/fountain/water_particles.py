@@ -5,7 +5,6 @@ from numba import njit
 
 
 GRAVITY = 155.
-OFFSET = 512
 STONE_CELL = 1
 STANDING_WATER = 2
 DRAIN_OFFSET = 8.15
@@ -19,19 +18,24 @@ def mark(cells, ix, iy, iz, color):
 
 
 @njit
-def trace(cells, starts, velocities, colors, from_liquid, duration, packet_phases=None):
+def trace(cells, starts, velocities, colors, from_liquid, duration, scale, packet_phases=None):
     """Visit each voxel crossed in each integration step, in boundary order."""
     hits = np.empty((len(starts), 6), dtype=np.float32)
     kinds = np.zeros(len(starts), np.uint8)
     valid = 0
+    offset = cells.shape[0] // 2
     for i in range(len(starts)):
         x, y, z = starts[i]
-        x += OFFSET
-        z += OFFSET
+        x += offset
+        z += offset
         vx, vy, vz = velocities[i]
         ix, iy, iz = int(np.floor(x)), int(np.floor(y)), int(np.floor(z))
+        if not (0 <= ix < cells.shape[0] and 0 <= iy < cells.shape[1] and 0 <= iz < cells.shape[2]):
+            continue
         first = cells[ix, iy, iz]
-        if (from_liquid and first != STANDING_WATER) or (not from_liquid and first in (STONE_CELL, STANDING_WATER)):
+        if first == STONE_CELL or (not from_liquid and first == STANDING_WATER):
+            continue
+        if scale == 1. and from_liquid and first != STANDING_WATER:
             continue
         valid += 1
         dry = first != STANDING_WATER
@@ -44,7 +48,7 @@ def trace(cells, starts, velocities, colors, from_liquid, duration, packet_phase
         collided = False
         while elapsed < duration and not collided:
             dt = min(.008, .36 / max(1., abs(vx), abs(vy), abs(vz)))
-            dx, dy, dz = vx*dt, (vy-.5*GRAVITY*dt)*dt, vz*dt
+            dx, dy, dz = vx*dt, (vy-.5*GRAVITY*scale*dt)*dt, vz*dt
             sx = 1 if dx > 0 else -1
             sy = 1 if dy > 0 else -1
             sz = 1 if dz > 0 else -1
@@ -73,9 +77,9 @@ def trace(cells, starts, velocities, colors, from_liquid, duration, packet_phase
                     # Move a small distance backward onto the air side of the impacted face.
                     tx0, ty0, tz0 = x+fraction*dx, y+fraction*dy, z+fraction*dz
                     distance = .032 / max(1e-7, np.sqrt(dx*dx+dy*dy+dz*dz))
-                    hits[i, 0] = tx0-dx*distance-OFFSET
+                    hits[i, 0] = tx0-dx*distance-offset
                     hits[i, 1] = ty0-dy*distance
-                    hits[i, 2] = tz0-dz*distance-OFFSET
+                    hits[i, 2] = tz0-dz*distance-offset
                     hits[i, 3] = vx
                     hits[i, 4] = vy
                     hits[i, 5] = vz
@@ -95,7 +99,7 @@ def trace(cells, starts, velocities, colors, from_liquid, duration, packet_phase
                         mark(cells, ix, iy, iz, colors[i])
                 fraction = min(tx, ty, tz)
             x, y, z = x+dx, y+dy, z+dz
-            vy -= GRAVITY*dt
+            vy -= GRAVITY*scale*dt
             elapsed += dt
     return kinds, hits, valid
 
@@ -104,9 +108,10 @@ def trace(cells, starts, velocities, colors, from_liquid, duration, packet_phase
 def spread_on_surface(cells, hits, headings, lengths, phases):
     """Follow the waterline with thin, broken foam streaks after an impact."""
     count = 0
+    offset = cells.shape[0] // 2
     for n in range(len(hits)):
-        ix0 = int(np.floor(hits[n, 0])) + OFFSET
-        iz0 = int(np.floor(hits[n, 2])) + OFFSET
+        ix0 = int(np.floor(hits[n, 0])) + offset
+        iz0 = int(np.floor(hits[n, 2])) + offset
         first_y = int(np.floor(hits[n, 1]))
         iy = first_y
         prior_x, prior_z = -1, -1
@@ -134,7 +139,7 @@ def spread_on_surface(cells, hits, headings, lengths, phases):
     return count
 
 
-def simulate_water(cells, front, lower, upper, nozzle_height):
+def simulate_water(cells, front, lower, upper, nozzle_height, scale, grid_center):
     rng = np.random.default_rng(241037)
     starts, velocities, values = [], [], []
     groups = []
@@ -227,8 +232,11 @@ def simulate_water(cells, front, lower, upper, nozzle_height):
     packet_phases = np.full(len(starts), -1., np.float32)
     for first, end, phase in jet_packets:
         packet_phases[first:end] = phase
-    kinds, hits, valid = trace(cells, starts, velocities, colors, True, 4., packet_phases)
-    if valid < .985 * len(starts):
+    starts *= scale
+    starts[:, (0, 2)] += grid_center
+    velocities *= scale
+    kinds, hits, valid = trace(cells, starts, velocities, colors, True, 4., scale, packet_phases)
+    if scale == 1. and valid < .985 * len(starts):
         raise RuntimeError(f"{len(starts)-valid} primary particles did not start in standing water")
     for name, first, end in groups:
         local = kinds[first:end]
@@ -236,27 +244,27 @@ def simulate_water(cells, front, lower, upper, nozzle_height):
         print(f"{name}: {end-first:,} launched, {np.count_nonzero(local == STONE_CELL):,} stone impacts, "
               f"{np.count_nonzero(wet):,} water impacts, "
               f"{np.count_nonzero(local == 3):,} exited scene", flush=True)
-        if not np.any(wet):
+        if scale == 1. and not np.any(wet):
             raise RuntimeError(f"No water impacts from {name}")
         if "spillways" in name:
             assert not np.any(velocities[first:end, (0, 2)])
             fall_dist = np.linalg.norm(hits[first:end][wet][:, (0, 2)]-starts[first:end][wet][:, (0, 2)], axis=1)
-            if np.max(fall_dist) > .002:
+            if np.max(fall_dist, initial=0.) > .002:
                 raise RuntimeError("A vertical spillway moved horizontally")
-            print(f"  Horizontal drift: {np.max(fall_dist):.5f} voxel", flush=True)
+            print(f"  Horizontal drift: {np.max(fall_dist, initial=0.):.5f} voxel", flush=True)
         if name == "angled jets":
             heights = hits[first:end][wet, 1]
-            mid_bowl = np.count_nonzero(abs(heights-target_height) <= 2.6)
+            mid_bowl = np.count_nonzero(abs(heights-target_height * scale) <= max(2.6 * scale, .5))
             print(f"  {mid_bowl:,} of {len(local):,} trials reached the middle bowl's water", flush=True)
             radii = np.hypot(starts[first:end,0], starts[first:end,2])
             speeds = np.linalg.norm(velocities[first:end],axis=1)
             print(f"  Outlet radius {radii.min():.2f}–{radii.max():.2f}; "
                   f"mean launch speed {speeds.mean():.2f} voxels/s", flush=True)
-            if mid_bowl != len(local):
+            if scale == 1. and mid_bowl != len(local):
                 raise RuntimeError("Top nozzles missed the middle bowl")
 
     impacted = hits[kinds == STANDING_WATER]
-    impacted = impacted[impacted[:, 4] < -22]
+    impacted = impacted[impacted[:, 4] < -22 * scale]
     _, indices = np.unique(np.floor(impacted[:, :3]).astype(np.int32), axis=0, return_index=True)
     impacted = impacted[indices]
     m = len(impacted)
@@ -268,7 +276,7 @@ def simulate_water(cells, front, lower, upper, nozzle_height):
     momentum = np.arctan2(runout[:, 5], runout[:, 3])
     headings = np.where(rng.random(n) < .58, momentum+rng.normal(0., .94, n),
                         rng.uniform(0., 2*np.pi, n))
-    length = np.rint(np.clip(-runout[:, 4]*.044, 5, 16)+rng.uniform(2, 20, n)).astype(np.int32)
+    length = np.rint(np.clip(-runout[:, 4]*.044, 5 * scale, 16 * scale)+rng.uniform(2, 20, n)*scale).astype(np.int32)
     surface_samples = spread_on_surface(cells, runout, headings, length, rng.uniform(0, 2*np.pi, n))
 
     # A small subset rebounds, with a vertical speed capped below about one voxel of rise.
@@ -277,7 +285,7 @@ def simulate_water(cells, front, lower, upper, nozzle_height):
     angle = rng.uniform(0, 2*np.pi, n)
     radial = rng.uniform(8., 25., n)
     lift = rng.uniform(5., 17., n)
-    velocity = np.column_stack((radial*np.cos(angle), lift, radial*np.sin(angle)))
+    velocity = np.column_stack((radial*np.cos(angle), lift, radial*np.sin(angle))) * scale
     _, _, accepted = trace(cells, rebound[:, :3].copy(), velocity,
-                            np.full(n, 11, dtype=np.uint8), False, .34)
+                            np.full(n, 11, dtype=np.uint8), False, .34, scale)
     print(f"{surface_samples:,} lateral foam samples, {accepted:,} low splash trajectories", flush=True)
