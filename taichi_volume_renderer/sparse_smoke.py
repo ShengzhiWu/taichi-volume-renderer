@@ -11,7 +11,7 @@ from ._ground import _thicken_ground
 from .sparse_data import SparseVolumeData, index_brick_values
 from ._smoke import (INTERFACE_ENTRY_OFFSET, REFRACTIVE_MAX_STEPS, ambient_light_parameters, apply_rgb_gamma,
                      composite_sample, crosses_refractive_interface, directional_light_parameters,
-                     follow_refractive_interface, intersect_box, light_cache_channels,
+                     intersect_box, light_cache_channels, refract_at_interface,
                      refract_from_gradient, validate_gamma)
 
 
@@ -768,6 +768,53 @@ class SparseSmokeScene(_OrbitScene):
         return index
 
     @ti.func
+    def _interface_face(self, point, direction, entity, voxel, entering):
+        rotation = self._rotations[entity]
+        local = rotation.transpose() @ (point - self._positions[entity])
+        ray = rotation.transpose() @ direction
+        distance = -1e30 if entering else 1e30
+        axis = 0
+        for i in ti.static(range(3)):
+            if ray[i] != 0.:
+                plane = voxel[i] + int((ray[i] < 0.) == entering)
+                candidate = (plane - local[i]) / ray[i]
+                if (entering and candidate > distance) or (not entering and candidate < distance):
+                    distance, axis = candidate, i
+        face = local + ray * distance
+        face[axis] = voxel[axis] + int((ray[axis] < 0.) == entering)
+        forward = ti.Vector.zero(ti.f32, 3)
+        forward[axis] = 1. if ray[axis] > 0. else -1.
+        return face, axis, rotation @ forward
+
+    @ti.func
+    def _interface_normal(self, face, axis, entity, forward):
+        u, v = (axis + 1) % 3, (axis + 2) % 3
+        cell = ti.floor(face)
+        delta = face - cell - .5
+        gradient = ti.Vector.zero(ti.f32, 3)
+        a, b = delta[u], delta[v]
+        wu = ti.Vector([.5*(.5-a)**2, .75-a*a, .5*(.5+a)**2])
+        wv = ti.Vector([.5*(.5-b)**2, .75-b*b, .5*(.5+b)**2])
+        du, dv = ti.Vector([a-.5, -2.*a, a+.5]), ti.Vector([b-.5, -2.*b, b+.5])
+        rotation = self._rotations[entity]
+        position = self._positions[entity]
+        for i, j in ti.ndrange(3, 3):
+            sample = cell + .5
+            sample[u] += i - 1
+            sample[v] += j - 1
+            high = self._ior_at(position + rotation @ sample)
+            sample[axis] -= 1.
+            low = self._ior_at(position + rotation @ sample)
+            mean = .5 * (low + high)
+            gradient[axis] += wu[i] * wv[j] * (high - low)
+            gradient[u] += du[i] * wv[j] * mean
+            gradient[v] += wu[i] * dv[j] * mean
+        normal = forward
+        if gradient.norm_sqr() > 1e-12:
+            normal = rotation @ gradient.normalized()
+        return normal
+
+    @ti.func
     def _sample_light(self, voxel_center):
         light = ti.Vector([1.0, 1.0, 1.0])
         if ti.static(self._lighting):
@@ -796,6 +843,8 @@ class SparseSmokeScene(_OrbitScene):
         index = ti.ceil(entry / self._step)
         previous_steps = 0.
         previous_medium, previous_code, interfaces = 1., 0, 0
+        previous_entity = 0
+        previous_voxel = ti.Vector.zero(ti.i32, 3)
         lower, upper = origin, origin
         if ti.static(self._refractive):
             half_extent = self._world_extent[None] * .5
@@ -823,6 +872,9 @@ class SparseSmokeScene(_OrbitScene):
             lit_color = ti.Vector.zero(ti.f32, 3)
             medium = 1.
             medium_code = 0
+            medium_entity = 0
+            medium_voxel = ti.Vector.zero(ti.i32, 3)
+            boundary = 1e30
             has_brick = False
             if ti.static(self._refractive):
                 medium = self._ior[0]
@@ -847,20 +899,39 @@ class SparseSmokeScene(_OrbitScene):
                             medium = self._ior[code]
                             if ti.static(self._use_interface_normals):
                                 medium_code = code
+                            if ti.static(self._interface):
+                                medium_entity, medium_voxel = entity, coordinates
                         if ti.static(self._interface):
                             has_brick = True
+                            rotation = self._rotations[entity].transpose()
+                            local = rotation @ (origin - self._positions[entity])
+                            boundary = ti.min(boundary, _distance_to_cell_exit(local, rotation @ direction, coordinates, 1))
 
             if ti.static(self._interface):
                 if crosses_refractive_interface(previous_medium, medium, self._ior[0], density != 0., interfaces):
+                    entering = previous_medium == self._ior[0]
+                    face_entity, face_voxel = previous_entity, previous_voxel
+                    if entering:
+                        face_entity, face_voxel = medium_entity, medium_voxel
+                    face, axis, forward = self._interface_face(origin, direction, face_entity, face_voxel, entering)
                     normal = ti.Vector.zero(ti.f32, 3)
                     if ti.static(self._use_interface_normals):
                         if medium != self._ior[0]:
                             normal = self._interface_normals[medium_code]
                         if normal.norm_sqr() == 0. and previous_medium != self._ior[0]:
                             normal = self._interface_normals[previous_code]
-                    origin, direction, fresnel, reflected, mirror = follow_refractive_interface(
-                        origin, direction, previous_medium, medium, self._step, 1., normal, self._ior_at,
-                    )
+                    if normal.norm_sqr() == 0.:
+                        normal = self._interface_normal(face, axis, face_entity, forward)
+                    bent, fresnel, reflected, mirror = refract_at_interface(direction, normal, previous_medium, medium)
+                    side = -1. if reflected else 1.
+                    if bent.dot(forward) * side <= 0.:
+                        bent, fresnel, reflected, mirror = refract_at_interface(
+                            direction, forward, previous_medium, medium,
+                        )
+                        side = -1. if reflected else 1.
+                    direction = bent
+                    origin = self._positions[face_entity] + self._rotations[face_entity] @ face
+                    origin += forward * (side * INTERFACE_ENTRY_OFFSET)
                     interfaces += 1
                     if reflected:
                         continue
@@ -871,18 +942,23 @@ class SparseSmokeScene(_OrbitScene):
                         reflection += ti.Vector(self._reflection_environment[1]) * alignment**58
                     color += transmittance * fresnel * reflection
                     transmittance *= 1. - fresnel
-                    # The empty-region distance was computed along the incident direction.
-                    next_sample = 0.
+                    previous_medium, previous_code = medium, medium_code
+                    previous_entity, previous_voxel = medium_entity, medium_voxel
+                    continue
                 previous_medium = medium
+                previous_entity, previous_voxel = medium_entity, medium_voxel
                 if ti.static(self._use_interface_normals):
                     previous_code = medium_code
 
             if next_sample > end and ti.static(not self._refractive):
                 break
+            sample_length = self._step
+            if ti.static(self._interface):
+                sample_length = ti.min(sample_length, boundary)
             if density != 0:
                 color, transmittance = composite_sample(
                     color, transmittance, lit_color / density, ti.Vector([1.0, 1.0, 1.0]),
-                    density * self._step,
+                    density * sample_length,
                 )
             if ti.static(self._refractive and not self._interface):
                 # Only skip space empty for the whole centered-difference stencil.
@@ -902,7 +978,9 @@ class SparseSmokeScene(_OrbitScene):
                     index = 1.
                     continue
             if ti.static(self._interface):
-                advance = self._step
+                advance = sample_length
+                if boundary <= self._step:
+                    advance += INTERFACE_ENTRY_OFFSET
                 if not has_brick:
                     # Land just past the empty cell boundary before resuming regular steps.
                     advance = ti.max(advance, next_sample + .003)
