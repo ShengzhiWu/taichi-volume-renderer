@@ -189,7 +189,7 @@ Caustics are enabled by default for VXB scenes with directional lighting and a m
 - `--no-caustics` disables caustics.
 - `--caustic-photon-density N` sets the number of photons per square voxel of projected area. The default is `6`.
 - `--caustic-multiplier N` scales the caustic radiance added to the cache. The default is `1`. Use a finite, nonnegative value.
-- `--caustic-dispersion D` sets the red, green, and blue caustic indices to `n - (n - 1) * D`, `n`, and `n + (n - 1) * D`. The default is `0`. A nonzero value traces each channel separately.
+- `--caustic-dispersion D` sets the red, green, and blue caustic indices to `n - (n - 1) * D`, `n`, and `n + (n - 1) * D`. The default is `0`. A nonzero value traces each channel separately from the first refractive interface.
 - `--refractive-shadow-passthrough auto|N` controls directional shadows when refraction is enabled. At `0`, refractive voxels block direct light. At `1`, they cast ordinary volume shadows. Values between `0` and `1` blend the two shadow results. The default, `auto`, uses `0` when caustics are enabled and `1` otherwise. An explicit number overrides `auto`.
 
 The renderer multiplies deposited light by the receiving material's RGB reflectance and adds it to the outgoing radiance cache.

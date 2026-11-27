@@ -102,7 +102,7 @@ class SparseSmokeTest(unittest.TestCase):
         scene.update_light()
         baseline = scene._uniform_light_cache.to_numpy()
         with patch("taichi_volume_renderer.caustics._gather_hits",
-                   return_value=(np.array([[0, 12], [0, 13]]), np.array([1., 3.]), np.pi)) as trace:
+                   return_value=[(np.array([[0, 12], [0, 13]]), np.array([1., 3.]), np.pi)]) as trace:
             scene.update_caustics()
             first = scene._uniform_light_cache.to_numpy()
             scene.update_light()

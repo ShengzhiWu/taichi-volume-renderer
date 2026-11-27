@@ -449,12 +449,10 @@ class SparseSmokeScene(_OrbitScene):
         if self._caustic_density is not None:
             from .caustics import _caustic_power
 
-            dispersion = self._caustic_dispersion
-            channels = enumerate((-dispersion, 0., dispersion)) if dispersion else ((-1, 0.),)
-            direction = -self._light_direction[None].to_numpy()
-            for channel, offset in channels:
-                addresses, power = _caustic_power(self, self._caustic_entity, self._caustic_uniform_bricks,
-                                                 direction, self._caustic_density, offset)
+            for channel, addresses, power in _caustic_power(
+                self, self._caustic_entity, self._caustic_uniform_bricks, -self._light_direction[None].to_numpy(),
+                self._caustic_density, self._caustic_dispersion,
+            ):
                 if len(power):
                     self._add_caustic_radiance(addresses, power, channel)
             ti.sync()

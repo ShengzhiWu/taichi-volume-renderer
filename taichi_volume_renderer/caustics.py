@@ -16,25 +16,57 @@ DEFAULT_PHOTON_DENSITY = 6
 
 
 @ti.kernel
+def _find_refraction(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, ndim=1),
+                     direction: ti.math.vec3, lower: ti.math.vec3, upper: ti.math.vec3,
+                     remaining: ti.types.ndarray(dtype=ti.i32, ndim=1)):
+    for photon in origins:
+        remaining[photon] = 0
+        pos = origins[photon]
+        entry, end = intersect_box(pos, direction, lower, upper, 0., 1e30)
+        if entry < end:
+            pos += direction * (entry + INTERFACE_ENTRY_OFFSET)
+            for step in range(REFRACTIVE_MAX_STEPS):
+                if not ((pos >= lower).all() and (pos < upper).all()):
+                    break
+                distance, brick, voxel, _ = scene._lookup(pos, direction, 0., 1e30, 0, exact_voxel=True)
+                if brick >= 0:
+                    code = scene._block_code(brick, voxel)
+                    if scene._ior[code] != scene._ior[0]:
+                        origins[photon] = pos
+                        remaining[photon] = REFRACTIVE_MAX_STEPS - step
+                        break
+                    if code != 0 and scene._materials[code].w > 0.:
+                        break
+                pos += direction * ti.max(.5, distance + .003)
+
+
+@ti.kernel
 def _trace(scene: ti.template(), origins: ti.types.ndarray(dtype=ti.math.vec3, ndim=1),
            direction: ti.math.vec3, lower: ti.math.vec3, upper: ti.math.vec3,
-           dispersion: ti.f32,
+           dispersion: ti.f32, prepared: ti.template(),
+           remaining: ti.types.ndarray(dtype=ti.i32, ndim=1),
            hits: ti.types.ndarray(dtype=ti.math.ivec2, ndim=1),
            weights: ti.types.ndarray(dtype=ti.f32, ndim=1)):
     for photon in origins:
         hits[photon] = ti.Vector([-1, -1])
         ray = direction
         pos = origins[photon]
-        entry, end = intersect_box(pos, ray, lower, upper, 0., 1e30)
-        if entry < end:
-            pos += ray * (entry + INTERFACE_ENTRY_OFFSET)
+        steps = 0
+        if ti.static(prepared):
+            steps = remaining[photon]
+        else:
+            entry, end = intersect_box(pos, ray, lower, upper, 0., 1e30)
+            if entry < end:
+                pos += ray * (entry + INTERFACE_ENTRY_OFFSET)
+                steps = REFRACTIVE_MAX_STEPS
+        if steps:
             ambient = scene._ior[0]
             ambient += dispersion * (ambient - 1.)
             previous = ambient
             previous_code, interfaces = 0, 0
             power = 1.
             refracted = False
-            for _ in range(REFRACTIVE_MAX_STEPS):
+            for _ in range(steps):
                 if not ((pos >= lower).all() and (pos < upper).all()):
                     break
                 distance, brick, voxel, _coords = scene._lookup(pos, ray, 0., 1e30, 0, exact_voxel=True)
@@ -105,21 +137,29 @@ def _gather_hits(scene, entity, direction, photon_density, dispersion):
     plane = (corners @ direction).min() - 1.
     samples = start + _stratified_samples(count, 0) * (end - start)
     origins = (samples @ np.stack((u, v)) + plane * direction).astype(np.float32)
-    hits = np.empty((count, 2), dtype=np.int32)
-    weights = np.zeros(count, dtype=np.float32)
-
-    _trace(scene, origins, direction, lower, upper, dispersion, hits, weights)
-    valid = hits[:, 0] >= 0
-    return hits[valid], weights[valid], area / count
+    remaining = np.empty(count if dispersion else 1, dtype=np.int32)
+    if dispersion:
+        _find_refraction(scene, origins, direction, lower, upper, remaining)
+        refracting = remaining > 0
+        origins, remaining = origins[refracting], remaining[refracting]
+    if not len(origins):
+        return
+    hits = np.empty((len(origins), 2), dtype=np.int32)
+    weights = np.empty(len(origins), dtype=np.float32)
+    offsets = (-dispersion, 0., dispersion) if dispersion else (0.,)
+    for offset in offsets:
+        _trace(scene, origins, direction, lower, upper, offset, bool(dispersion), remaining, hits, weights)
+        valid = hits[:, 0] >= 0
+        yield hits[valid], weights[valid], area / count
 
 
 def _caustic_power(scene, entity, uniform_bricks, direction, photon_density, dispersion):
-    hits, weights, area = _gather_hits(scene, entity, direction, photon_density, dispersion)
     volumes = np.ones(scene.brick_count, dtype=np.float64)
     for shift, _x, _y, _z, row in uniform_bricks:
         volumes[row] = 2. ** (3 * shift)
-    hits[volumes[hits[:, 0]] > 1, 1] = 0
-    voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
-    bricks, slots = np.divmod(voxels, 512)
-    power = np.bincount(grouping, weights=weights) * (area / np.pi) / volumes[bricks]
-    return np.column_stack((bricks, slots)).astype(np.int32), power.astype(np.float32)
+    for channel, (hits, weights, area) in enumerate(_gather_hits(scene, entity, direction, photon_density, dispersion)):
+        hits[volumes[hits[:, 0]] > 1, 1] = 0
+        voxels, grouping = np.unique(hits.astype(np.int64) @ [512, 1], return_inverse=True)
+        bricks, slots = np.divmod(voxels, 512)
+        power = np.bincount(grouping, weights=weights) * (area / np.pi) / volumes[bricks]
+        yield channel if dispersion else -1, np.column_stack((bricks, slots)).astype(np.int32), power.astype(np.float32)
