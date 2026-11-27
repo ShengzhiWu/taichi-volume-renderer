@@ -18,13 +18,13 @@ from taichi_volume_renderer.vxb_scene import load_vxb_volume
 
 
 class SparseSmokeTest(unittest.TestCase):
-    def test_caustic_spectral_colors_interpolate_between_balanced_anchors(self):
-        hues = np.array([-1/6, -1/12, 0., 1/12, 1/6, 1/3, 1/2, 2/3, 5/6, 11/12, 1.])
-        np.testing.assert_allclose(_spectral_rgb(hues), [
-            [0., 0., 0.], [.5, 0., 0.], [1., 0., 0.], [.75, .25, 0.],
-            [.5, .5, 0.], [0., 1., 0.], [0., .5, .5], [0., 0., 1.],
-            [.5, 0., .5], [.25, 0., .25], [0., 0., 0.],
-        ], atol=1e-7)
+    def test_caustic_spectrum_has_neutral_mean_rgb(self):
+        rgb = _spectral_rgb(np.array([370., 570., 575., 580., 650., 730.]))
+        np.testing.assert_allclose(rgb[2], .5 * (rgb[1] + rgb[3]))
+        np.testing.assert_array_equal(rgb[[0, 5]], np.zeros((2, 3)))
+        table = _spectral_rgb(np.arange(380, 721, 10)).astype(np.float64)
+        mean = (table.sum(axis=0) - .5 * (table[0] + table[-1])) / 34
+        np.testing.assert_allclose(mean, np.ones(3), atol=1e-7)
 
     def test_shadow_samples_full_steps_at_their_midpoints(self):
         ti.init(arch=ti.cpu)

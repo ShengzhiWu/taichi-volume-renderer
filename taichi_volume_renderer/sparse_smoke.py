@@ -185,9 +185,8 @@ class SparseSmokeScene(_OrbitScene):
             if indices.shape != (65536,) or not np.all(np.isfinite(indices) & (indices > 0)):
                 raise ValueError("Expected a positive finite index of refraction for each material code")
             if self._caustic_density is not None and self._caustic_dispersion:
-                spread = self._caustic_dispersion * (indices.astype(np.float64) - 1.)
-                extremes = (indices - 1.5 * spread, indices + 2. * spread)
-                if any(np.any((values <= 0.) | (values > np.finfo(np.float32).max)) for values in extremes):
+                spread = 1.7 * self._caustic_dispersion * np.abs(indices.astype(np.float64) - 1.)
+                if np.any((indices - spread <= 0.) | (indices + spread > np.finfo(np.float32).max)):
                     raise ValueError("caustic_dispersion produces an out-of-range index of refraction")
             self._ior = ti.field(ti.f32,shape=65536)
             self._ior.from_numpy(indices)

@@ -7,6 +7,7 @@ import math
 import numpy as np
 import taichi as ti
 
+from ._caustic_spectrum import SPECTRAL_RGB, WAVELENGTHS_NM
 from ._smoke import (INTERFACE_ENTRY_OFFSET, REFRACTIVE_MAX_STEPS,
                      crosses_refractive_interface,
                      follow_refractive_interface, intersect_box)
@@ -118,13 +119,11 @@ def _stratified_samples(count, seed):
     return samples
 
 
-def _spectral_rgb(hues):
-    anchors = np.array([
-        (0., 0., 0.), (1., 0., 0.), (.5, .5, 0.), (0., 1., 0.),
-        (0., .5, .5), (0., 0., 1.), (.5, 0., .5), (0., 0., 0.),
-    ])
-    knots = np.arange(-1, 7) / 6.
-    return np.column_stack([np.interp(hues, knots, channel) for channel in anchors.T]).astype(hues.dtype)
+def _spectral_rgb(wavelengths):
+    return np.column_stack([
+        np.interp(wavelengths, WAVELENGTHS_NM, channel, left=0., right=0.)
+        for channel in zip(*SPECTRAL_RGB)
+    ]).astype(np.float32)
 
 
 def _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_samples):
@@ -161,14 +160,13 @@ def _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_
     offsets = np.zeros(1, dtype=np.float32)
     for _ in range(spectral_samples if dispersion else 1):
         if dispersion:
-            hues = rng.uniform(-1. / 6, 1., len(origins)).astype(np.float32)
-            offsets = dispersion * (3. * hues - 1.)
+            wavelengths = rng.uniform(WAVELENGTHS_NM[0], WAVELENGTHS_NM[-1], len(origins)).astype(np.float32)
+            offsets = dispersion * ((550. - wavelengths) / 100.)
         _trace(scene, origins, direction, lower, upper, offsets, bool(dispersion), remaining, hits, weights)
         valid = hits[:, 0] >= 0
         power = weights[valid]
         if dispersion:
-            # Each RGB component has mean 2/7 over the full hue interval.
-            power = power[:, None] * _spectral_rgb(hues[valid]) * (7. / (2. * spectral_samples))
+            power = power[:, None] * _spectral_rgb(wavelengths[valid]) / spectral_samples
         yield hits[valid], power, area / count
 
 
