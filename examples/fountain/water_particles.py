@@ -234,6 +234,10 @@ def simulate_water(cells, front, lower, upper, nozzle_height, scale, grid_center
         packet_phases[first:end] = phase
     starts *= scale
     starts[:, (0, 2)] += grid_center
+    # Start above the last stone voxel, whose center lies below the nozzle lip.
+    lip = np.ceil(nozzle_height * scale - .5)
+    plume = starts[:groups[0][2], 1]
+    np.maximum(plume, lip, out=plume)
     velocities *= scale
     kinds, hits, valid = trace(cells, starts, velocities, colors, True, 4., scale, packet_phases)
     if scale == 1. and valid < .985 * len(starts):

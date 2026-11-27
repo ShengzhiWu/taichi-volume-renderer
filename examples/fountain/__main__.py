@@ -263,7 +263,8 @@ def make_sector(coord, scale, center):
     sx, sy, sz = coord
     axis = np.arange(128, dtype=np.float32) + .5
     x = ((axis + sx*128 - center) / scale)[:, None, None]
-    y = ((axis + sy*128) / scale)[None, :, None]
+    voxel_y = (axis + sy*128)[None, :, None]
+    y = voxel_y / scale
     z = ((axis + sz*128 - center) / scale)[None, None, :]
     r = np.hypot(x, z)
     theta = np.arctan2(z, x)
@@ -304,7 +305,7 @@ def make_sector(coord, scale, center):
         paver = (staggered_x % 106. < 106. - 1. / scale) & (z % 79. < 79. - 1. / scale)
         if 79. * scale < 2.:
             paver = True
-        ground = (edge < GROUND_EDGE) & (y >= -max(14., .5 / scale)) & (y < -2)
+        ground = (edge < GROUND_EDGE) & (voxel_y >= -max(14. * scale, .5)) & (voxel_y < -2. * scale)
         damp = np.exp(-((r-433)/36.)**2) * (.46+.54*value_noise(x-71,z+36,69))
         natural = 4.28+.8*(hash01(col,row)-.5)+variation-.72*damp
         stone(ground & paver, natural, 0., lift=0.)
