@@ -888,7 +888,6 @@ class SparseSmokeScene(_OrbitScene):
             medium_code = 0
             medium_entity = 0
             medium_voxel = ti.Vector.zero(ti.i32, 3)
-            boundary = 1e30
             has_brick = False
             if ti.static(self._refractive):
                 medium = self._ior[0]
@@ -917,9 +916,6 @@ class SparseSmokeScene(_OrbitScene):
                                 medium_entity, medium_voxel = entity, coordinates
                         if ti.static(self._interface):
                             has_brick = True
-                            rotation = self._rotations[entity].transpose()
-                            local = rotation @ (origin - self._positions[entity])
-                            boundary = ti.min(boundary, _distance_to_cell_exit(local, rotation @ direction, coordinates, 1))
 
             if ti.static(self._interface):
                 if crosses_refractive_interface(previous_medium, medium, self._ior[0], density != 0., interfaces):
@@ -966,13 +962,10 @@ class SparseSmokeScene(_OrbitScene):
 
             if next_sample > end and ti.static(not self._refractive):
                 break
-            sample_length = self._step
-            if ti.static(self._interface):
-                sample_length = ti.min(sample_length, boundary)
             if density != 0:
                 color, transmittance = composite_sample(
                     color, transmittance, lit_color / density, ti.Vector([1.0, 1.0, 1.0]),
-                    density * sample_length,
+                    density * self._step,
                 )
             if ti.static(self._refractive and not self._interface):
                 # Only skip space empty for the whole centered-difference stencil.
@@ -992,9 +985,7 @@ class SparseSmokeScene(_OrbitScene):
                     index = 1.
                     continue
             if ti.static(self._interface):
-                advance = sample_length
-                if boundary <= self._step:
-                    advance += INTERFACE_ENTRY_OFFSET
+                advance = self._step
                 if not has_brick:
                     # Land just past the empty cell boundary before resuming regular steps.
                     advance = ti.max(advance, next_sample + .003)
