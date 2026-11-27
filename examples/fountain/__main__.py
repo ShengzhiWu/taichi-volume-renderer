@@ -50,6 +50,7 @@ def generate(path, *, merge_hidden=True):
     palette = packed_color_materials(.65)
     palette[WATER_CODE] = (.31, .42, .43, .0024)
     palette[FOAM_CODE] = (1., 1., 1., .70)
+    palette[4:7] = GRASS_MATERIALS
     used = np.zeros(65536, dtype=bool)
     used[0] = True
     for bricks in world.values():
@@ -190,6 +191,7 @@ STONE = np.array([
 ], dtype=np.int32)
 WATER_CODE = np.uint16(3)
 FOAM_CODE = np.uint16(0xffff)
+GRASS_MATERIALS = ((.12, .24, .045, .65), (.19, .35, .07, .65), (.30, .44, .10, .65))
 EYE = np.array([255., 395., -1400.])
 TARGET = np.array([0., 114., 0.])
 
@@ -424,6 +426,45 @@ def make_sector(coord):
     return section, liquid
 
 
+def plant_grass(grids):
+    rng = np.random.default_rng(381)
+    roots = []
+    for offsets in ((0, 10), (0, 10), (0,), (0,), (0,), (0,)):
+        while True:
+            x = int(rng.integers(-480, 471))
+            z = int(rng.integers(-6, 7)) * 79 - 1
+            if (all(np.hypot(x + offset, z) > 465 for offset in offsets)
+                    and all(np.hypot(x + offset - px, z - pz) > 55
+                            for offset in offsets for px, pz in roots)):
+                roots.extend((x + offset, z) for offset in offsets)
+                break
+
+    scales = rng.uniform(.65, 1.35, len(roots))
+    scales *= 3. / scales.mean()
+    for (x, z), scale in zip(roots, scales):
+        blades = rng.integers(5, 11)
+        heading = rng.uniform(0., 2. * np.pi)
+        spread = rng.uniform(.65, 1.35)
+        for blade in range(blades):
+            angle = heading + blade * (2. * np.pi / blades) + rng.uniform(-.3, .3)
+            height = scale * rng.uniform(7., 14.)
+            lean = scale * spread * rng.uniform(2.5, 6.)
+            curve = rng.uniform(1.5, 3.)
+            for t in np.linspace(0., 1., 144):
+                # Upright blades curve away from the root near their tips.
+                bend = lean * t**curve
+                cell = (int(np.floor(x + .5 + bend * np.cos(angle))),
+                        int(np.floor(-4. + height * t)),
+                        int(np.floor(z + .5 + bend * np.sin(angle))))
+                sector = tuple(axis // 128 for axis in cell)
+                local = tuple(axis % 128 for axis in cell)
+                if sector not in grids:
+                    grids[sector] = np.zeros((128, 128, 128), np.uint16)
+                voxels = grids[sector]
+                if voxels[local] == 0:
+                    voxels[local] = 4 + min(int(t * 3), 2)
+
+
 def sectors():
     grids = {}
     # Collision cells are 0 for air, 1 for stone, 2 for standing water.
@@ -444,6 +485,7 @@ def sectors():
                         x, y, z = (sx+4)*128, sy*128, (sz+4)*128
                         collision[x:x+128, y:y+128, z:z+128] = np.where(liquid, 2, voxels >= 0x8000)
     simulate_water(collision, FRONT, LOWER, UPPER, NOZZLE_HEIGHT)
+    plant_grass(grids)
 
     for sx in range(-4, 4):
         for sy in range(-1, 4):
