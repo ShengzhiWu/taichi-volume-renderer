@@ -119,11 +119,12 @@ def _stratified_samples(count, seed):
 
 
 def _spectral_rgb(hues):
-    visible = np.clip(hues, 0., 5. / 6)
-    phase = (6. * visible[:, None] + np.array([5., 3., 1.], dtype=visible.dtype)) % 6.
-    rgb = 1. - np.clip(np.minimum(phase, 4. - phase), 0., 1.)
-    fade = np.clip(np.minimum(1. + 6. * hues, 6. * (1. - hues)), 0., 1.)
-    return rgb * fade[:, None]
+    anchors = np.array([
+        (0., 0., 0.), (1., 0., 0.), (.5, .5, 0.), (0., 1., 0.),
+        (0., .5, .5), (0., 0., 1.), (.5, 0., .5), (0., 0., 0.),
+    ])
+    knots = np.arange(-1, 7) / 6.
+    return np.column_stack([np.interp(hues, knots, channel) for channel in anchors.T]).astype(hues.dtype)
 
 
 def _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_samples):
@@ -166,8 +167,8 @@ def _gather_hits(scene, entity, direction, photon_density, dispersion, spectral_
         valid = hits[:, 0] >= 0
         power = weights[valid]
         if dispersion:
-            # Each RGB component has mean 3/7 over the full hue interval.
-            power = power[:, None] * _spectral_rgb(hues[valid]) * (7. / (3. * spectral_samples))
+            # Each RGB component has mean 2/7 over the full hue interval.
+            power = power[:, None] * _spectral_rgb(hues[valid]) * (7. / (2. * spectral_samples))
         yield hits[valid], power, area / count
 
 

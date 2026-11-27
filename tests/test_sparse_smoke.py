@@ -18,11 +18,12 @@ from taichi_volume_renderer.vxb_scene import load_vxb_volume
 
 
 class SparseSmokeTest(unittest.TestCase):
-    def test_caustic_spectral_colors_fade_to_black_at_the_endpoints(self):
-        hues = np.array([-1/6, -1/12, 0., 1/3, 2/3, 5/6, 11/12, 1.])
+    def test_caustic_spectral_colors_interpolate_between_balanced_anchors(self):
+        hues = np.array([-1/6, -1/12, 0., 1/12, 1/6, 1/3, 1/2, 2/3, 5/6, 11/12, 1.])
         np.testing.assert_allclose(_spectral_rgb(hues), [
-            [0., 0., 0.], [.5, 0., 0.], [1., 0., 0.], [0., 1., 0.],
-            [0., 0., 1.], [1., 0., 1.], [.5, 0., .5], [0., 0., 0.],
+            [0., 0., 0.], [.5, 0., 0.], [1., 0., 0.], [.75, .25, 0.],
+            [.5, .5, 0.], [0., 1., 0.], [0., .5, .5], [0., 0., 1.],
+            [.5, 0., .5], [.25, 0., .25], [0., 0., 0.],
         ], atol=1e-7)
 
     def test_shadow_samples_full_steps_at_their_midpoints(self):
