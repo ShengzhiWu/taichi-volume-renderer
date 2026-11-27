@@ -52,6 +52,8 @@ def main():
                         help="Apply x^gamma to each loaded RGB component (default: 1)")
     parser.add_argument("--refraction-mode", choices=("gradient", "interface"),
                         help="Select VXB refraction mode or enable refraction for packed CXW water (ID 3)")
+    parser.add_argument("--interface-normal-neighborhood", choices=("3*3*2", "2*2*2"), default="3*3*2",
+                        help="Voxel neighborhood for estimated interface normals (default: 3*3*2)")
     parser.add_argument("--step", type=float, default=1.0, help="Camera ray step in voxel units")
     parser.add_argument("--light-step", type=float, default=3.0, help="Shadow ray step in voxel units")
     parser.add_argument("--max-steps", type=int,
@@ -81,7 +83,7 @@ def main():
     if ggui and args.arch not in (None, "vulkan"):
         parser.error("--ggui requires --arch vulkan")
     arch = args.arch or ("vulkan" if ggui else "gpu")
-    optics = {}
+    optics = {"interface_normal_neighborhood": args.interface_normal_neighborhood}
     if args.refraction_mode is not None:
         optics["refraction_mode"] = args.refraction_mode
         suffix = Path(args.path).suffix.lower()

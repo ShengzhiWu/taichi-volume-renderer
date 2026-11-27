@@ -94,6 +94,7 @@ class SparseSmokeScene(_OrbitScene):
         index_of_refraction=None, refraction_mode="interface", interface_normals=None, emission=None,
         reflection_environment=None, refractive_shadow_passthrough="auto", caustic_photon_density=None,
         caustic_multiplier=1.0, caustic_dispersion=0.0, caustic_spectral_samples=3,
+        interface_normal_neighborhood="3*3*2",
     ):
         """Use voxel units for ray steps and the dense scene's units for point lights.
 
@@ -103,6 +104,7 @@ class SparseSmokeScene(_OrbitScene):
         Entry 0 is the ambient medium, including air outside allocated bricks.
         refraction_mode selects the dense gradient step or discrete interface optics.
         Nonzero Z-up interface_normals override the estimated normal in interface mode.
+        interface_normal_neighborhood selects "3*3*2" or "2*2*2" for estimated normals.
         emission is an optional 65,536-entry RGB table of linear outgoing radiance.
         reflection_environment optionally adds (sky RGB, sun RGB) to interface reflections.
         refractive_shadow_passthrough blends opaque refractive shadows (0) with ordinary shadows (1).
@@ -137,6 +139,9 @@ class SparseSmokeScene(_OrbitScene):
             raise ValueError("max_steps must be None or a positive 32-bit integer")
         if refraction_mode not in ("gradient", "interface"):
             raise ValueError("refraction_mode must be 'gradient' or 'interface'")
+        if interface_normal_neighborhood not in ("3*3*2", "2*2*2"):
+            raise ValueError("interface_normal_neighborhood must be '3*3*2' or '2*2*2'")
+        self._normal_stencil_width = int(interface_normal_neighborhood[0])
         self._refractive = index_of_refraction is not None
         if not np.isfinite(caustic_multiplier) or caustic_multiplier < 0:
             raise ValueError("caustic_multiplier must be finite and nonnegative")
@@ -787,21 +792,30 @@ class SparseSmokeScene(_OrbitScene):
         return face, axis, rotation @ forward
 
     @ti.func
+    def _interface_normal_weights(self, coordinate):
+        if ti.static(self._normal_stencil_width == 2):
+            start = ti.floor(coordinate - .5) + .5
+            t = coordinate - start
+            return start, ti.Vector([1. - t, t]), ti.Vector([-1., 1.])
+        else:
+            center = ti.floor(coordinate) + .5
+            t = coordinate - center
+            return (center - 1., ti.Vector([.5*(.5-t)**2, .75-t*t, .5*(.5+t)**2]),
+                    ti.Vector([t-.5, -2.*t, t+.5]))
+
+    @ti.func
     def _interface_normal(self, face, axis, entity, forward):
         u, v = (axis + 1) % 3, (axis + 2) % 3
-        cell = ti.floor(face)
-        delta = face - cell - .5
+        start_u, wu, du = self._interface_normal_weights(face[u])
+        start_v, wv, dv = self._interface_normal_weights(face[v])
         gradient = ti.Vector.zero(ti.f32, 3)
-        a, b = delta[u], delta[v]
-        wu = ti.Vector([.5*(.5-a)**2, .75-a*a, .5*(.5+a)**2])
-        wv = ti.Vector([.5*(.5-b)**2, .75-b*b, .5*(.5+b)**2])
-        du, dv = ti.Vector([a-.5, -2.*a, a+.5]), ti.Vector([b-.5, -2.*b, b+.5])
         rotation = self._rotations[entity]
         position = self._positions[entity]
-        for i, j in ti.ndrange(3, 3):
-            sample = cell + .5
-            sample[u] += i - 1
-            sample[v] += j - 1
+        for i, j in ti.ndrange(self._normal_stencil_width, self._normal_stencil_width):
+            sample = ti.Vector.zero(ti.f32, 3)
+            sample[axis] = face[axis] + .5
+            sample[u] = start_u + i
+            sample[v] = start_v + j
             high = self._ior_at(position + rotation @ sample)
             sample[axis] -= 1.
             low = self._ior_at(position + rotation @ sample)

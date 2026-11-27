@@ -250,6 +250,8 @@ For dense `DisplayWindow(...)` and `plot_volume()`, pass an `index_of_refraction
 
 With refraction enabled, camera rays are limited to 10000 steps by default. Straight rays have no default step limit. To set the limit explicitly, use `ray_tracing_max_steps=N` for dense scenes or `max_steps=N` for sparse scenes in Python. The sparse CLI uses `--max-steps N`. The sparse renderer counts steps skipped through empty space toward the limit.
 
+For sparse camera rays, `--interface-normal-neighborhood "3*3*2"` (the default) uses 18 voxels for the estimated normal at a crossed face. Select `"2*2*2"` to use the trilinear gradient from eight voxels. The Python argument is `interface_normal_neighborhood`. Material-supplied normals take precedence.
+
 The examples pictured below explicitly use `refraction_mode="gradient"` to reproduce the illustrated continuous-gradient behavior. Run the glass ball with `python -m examples.refraction`, the fluid example with `python -m examples.pbf3d`, or the mirage with `python -m examples.mirage`.
 
 ![refraction](images/refraction.jpg)
