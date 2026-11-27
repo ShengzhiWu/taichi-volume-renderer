@@ -17,16 +17,19 @@ from .water_particles import DRAIN_OFFSET, simulate_water
 from .wave_field import hash01, value_noise, water_wave
 
 
+DEFAULT_RESOLUTION = 301
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="Path for the generated VXB")
-    parser.add_argument("--resolution", type=int, default=2 * GROUND_EDGE,
-                        help="Paving width in voxels (10–1016, default: 1016)")
+    parser.add_argument("--resolution", type=int, default=DEFAULT_RESOLUTION,
+                        help=f"Paving width in voxels (default: {DEFAULT_RESOLUTION}, suggested range: 10–1016)")
     parser.add_argument("--no-merge-hidden-materials", action="store_true", help="Preserve interior stone colors")
     args = parser.parse_args()
 
-    if not 10 <= args.resolution <= 2 * GROUND_EDGE:
-        parser.error("--resolution must be between 10 and 1016")
+    if args.resolution <= 0:
+        parser.error("--resolution must be positive")
     generate(args.output, resolution=args.resolution, merge_hidden=not args.no_merge_hidden_materials)
 
 
@@ -49,7 +52,7 @@ def _camera(scale, center):
     return CameraPose(tuple(EYE[[0, 2, 1]] * scale + (center, center, 0.)), tuple(xyzw))
 
 
-def generate(path, *, resolution=1016, merge_hidden=True):
+def generate(path, *, resolution=DEFAULT_RESOLUTION, merge_hidden=True):
     scale = resolution / (2 * GROUND_EDGE)
     center = .5 * (resolution % 2)
     world = dict(sectors(scale, center))
